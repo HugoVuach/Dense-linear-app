@@ -1,1 +1,1 @@
-# Implementation-and-deployment-of-a-dense-linear-algebra-application-in-the-cloud
+# Implementation and deployment of a dense linear algebra application in the cloud
