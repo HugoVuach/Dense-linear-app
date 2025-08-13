@@ -24,9 +24,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     openmpi-bin libopenmpi-dev \
  && rm -rf /var/lib/apt/lists/*
 
- libevent-2.1-7
 
-# OpenBLAS -> /usr/local
+# OpenBLAS 
 RUN set -eux; cd /tmp; \
     git clone --depth 1 --branch v0.3.26 https://github.com/xianyi/OpenBLAS.git; \
     cd OpenBLAS; make USE_LAPACK=1 LAPACKE=1 -j"$(nproc)"; \
@@ -85,7 +84,7 @@ RUN set -eux; cd /tmp; \
 
 
 # =============================================================================
-# Stage 2 — runtime base (smaller image with runtime libs)
+# Stage 2 — runtime base 
 # =============================================================================
 FROM nvidia/cuda:12.9.0-runtime-ubuntu24.04 AS runtime
 
@@ -114,7 +113,7 @@ WORKDIR /work
 CMD ["/bin/bash", "-lc", "echo 'CUDA:' && nvcc --version || true; echo 'MPI:' && mpicc --version | head -n1; echo 'StarPU:' && pkg-config --modversion starpu-1.4 || true; echo 'Chameleon:' && pkg-config --modversion chameleon || true"]
 
 # =============================================================================
-# Stage 3 — app-build (compile your v6_test & bench using the full toolchain)
+# Stage 3 — app-build - v6_test.c benchmark.c
 # =============================================================================
 FROM builder AS app-build
 
@@ -131,7 +130,7 @@ RUN make -j"$(nproc)"
 
 
 # =============================================================================
-# Stage 4 — app (final image to run your benchmarks)
+# Stage 4 — app 
 # =============================================================================
 FROM runtime AS app
 
@@ -147,3 +146,4 @@ COPY --from=app-build /app/v6_test /app/bench ./
 RUN mkdir -p /app/results
 
 CMD ["/bin/bash"]
+
