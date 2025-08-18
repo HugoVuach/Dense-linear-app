@@ -8,10 +8,10 @@
 #include <string>     // Manipulation de chaînes de caractères std::string
 #include <vector>     // Conteneur tableau dynamique std::vector
 #include <stdexcept>  // Classes d'exceptions standard (std::runtime_error, etc.)
-#include <cmath>      // Fonctions mathématiques (sqrt, pow, etc.)
-#include <ctime>      // Fonctions liées au temps/calendrier (std::time, std::strftime)
-#include <cstdlib>    // Fonctions utilitaires standard (getenv, atoi, etc.)
-#include <thread>     // Gestion des threads et requêtes sur le hardware (hardware_concurrency)
+#include <cmath>      // Fonctions mathématiques 
+#include <ctime>      // Fonctions liées au temps/calendrier 
+#include <cstdlib>    // Fonctions utilitaires standard 
+#include <thread>     // Gestion des threads et requêtes sur le hardware 
 
 // ============================================================================
 //  Inclusions spécifiques gRPC
@@ -19,17 +19,17 @@
 
 #include <grpcpp/grpcpp.h>                 // API principale gRPC pour C++
 #include "grpcpp/support/sync_stream.h"    // Support pour les flux gRPC synchrones
+#include "objects.pb.h"                    // Définition des messages gRPC 
 
 // ============================================================================
 //  Inclusions spécifiques à ArmoniK (SDK C++)
 // ============================================================================
 
-#include "objects.pb.h"                    // Définition des messages gRPC (Protobuf générés)
-#include "utils/WorkerServer.h"            // Serveur Worker ArmoniK (point d'entrée du service)
-#include "Worker/ArmoniKWorker.h"          // Classe de base pour implémenter un Worker personnalisé
-#include "Worker/ProcessStatus.h"          // Statut retourné après exécution d'une tâche
-#include "Worker/TaskHandler.h"            // Objet représentant le contexte d'une tâche (payload, résultats attendus...)
-#include "exceptions/ArmoniKApiException.h"// Gestion des exceptions spécifiques à l'API ArmoniK
+#include "utils/WorkerServer.h"             // Serveur Worker ArmoniK 
+#include "Worker/ArmoniKWorker.h"           // Classe de base pour implémenter un Worker personnalisé
+#include "Worker/ProcessStatus.h"           // Statut retourné après exécution d'une tâche
+#include "Worker/TaskHandler.h"             // Objet représentant le contexte d'une tâche (payload, résultats attendus...)
+#include "exceptions/ArmoniKApiException.h" // Gestion des exceptions spécifiques à l'API ArmoniK
 
 
 // ============================================================================
@@ -45,7 +45,7 @@
 // définis dans la bibliothèque Chameleon compilée en C.
 
 extern "C" { 
-#include <chameleon.h>   // En-tête principal de l'API Chameleon
+#include <chameleon.h>   
 }
 
 
@@ -54,17 +54,17 @@ extern "C" {
 // ============================================================================
 // Retourne la date et l'heure actuelles sous forme d'une chaîne formatée.
 //
-// - std::time(nullptr) pour obtenir l'heure actuelle en secondes
+// Fonctionnement :
+// - std::time(nullptr) obtenir l'heure actuelle en secondes
 // - std::localtime(&t) convertit cette valeur en une structure 'tm'
-//   représentant la date/heure locale.
 // - std::strftime(...) formate cette date dans le tampon 'buf' 
 
 static std::string now_ts() {
-  std::time_t t = std::time(nullptr);                          // Heure courante (UTC → timestamp)
-  char buf[64];                                                // Tampon pour formatage
-  std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S",         // Format YYYY-MM-DD HH:MM:SS
-                std::localtime(&t));                           // Conversion en heure locale
-  return std::string(buf);                                     // Conversion en std::string et retour
+  std::time_t t = std::time(nullptr);                          
+  char buf[64];                                                
+  std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S",         
+                std::localtime(&t));                          
+  return std::string(buf);                                     
 }
 
 
@@ -72,9 +72,10 @@ static std::string now_ts() {
 //  Fonction utilitaire : env_int
 // ============================================================================
 // Lecture d'une variable d'environnement et conversion en entier positif.
+// Utile pour passer ngpu & ncpu en variables d'environnement
 //
 // Paramètres :
-//  - key    : nom de la variable d'environnement à lire (ex. "CHM_NCPU").
+//  - key    : nom de la variable d'environnement à lire.
 //  - defval : valeur par défaut à utiliser si la variable n'existe pas ou
 //             si sa conversion échoue.
 //
@@ -105,8 +106,8 @@ static int env_int(const char* key, int defval) {
 //  Classe : CholeskyWorker
 // ============================================================================
 // Hérite de ArmoniKWorker (classe de base du SDK ArmoniK C++) et implémente
-// la méthode Execute() pour effectuer une factorisation de Cholesky LLᵀ
-// en utilisant la bibliothèque Chameleon.
+// la méthode Execute() pour effectuer une factorisation de Cholesky en
+// utilisant la bibliothèque Chameleon.
 //
 // La méthode Execute() est appelée par ArmoniK à chaque tâche reçue.
 // Elle reçoit un TaskHandler qui fournit :
@@ -121,26 +122,25 @@ static int env_int(const char* key, int defval) {
 
 class CholeskyWorker : public armonik::api::worker::ArmoniKWorker {
 public:
-  // Constructeur : passe le stub gRPC Agent au constructeur parent
-  explicit CholeskyWorker(std::unique_ptr<armonik::api::grpc::v1::agent::Agent::Stub> agent)
-      : ArmoniKWorker(std::move(agent)) {}
+  explicit CholeskyWorker(std::unique_ptr<armonik::api::grpc::v1::agent::Agent::Stub> agent): ArmoniKWorker(std::move(agent)) {}
 
-  // Méthode principale exécutée pour chaque tâche
+  // Méthode exécutée pour chaque tâche
   armonik::api::worker::ProcessStatus Execute(armonik::api::worker::TaskHandler &taskHandler) override {
     try {
       // ----------------------------------------------------------------------
       // 1) Lecture et parsing de la payload
-      // ----------------------------------------------------------------------
       // La payload attendue contient 14 entiers : N NB mb nb bsiz lm ln ioff joff m n p q seed
+      // ----------------------------------------------------------------------
       const std::string payload = taskHandler.getPayload();
       std::istringstream iss(payload);
       int N, NB, mb, nb, bsiz, lm, ln, ioff, joff, m, n, p, q, seed;
-      if (!(iss >> N >> NB >> mb >> nb >> bsiz >> lm >> ln
-                >> ioff >> joff >> m >> n >> p >> q >> seed)) {
-        // Si parsing échoue → statut d'erreur
+      
+      // Si parsing échoue → statut d'erreur
+      if (!(iss >> N >> NB >> mb >> nb >> bsiz >> lm >> ln >> ioff >> joff >> m >> n >> p >> q >> seed)) 
+      {
         std::ostringstream err;
         err << "Payload parsing error. Expect 14 integers: "
-               "N NB mb nb bsiz lm ln ioff joff m n p q seed. Got: " << payload;
+              "N NB mb nb bsiz lm ln ioff joff m n p q seed. Got: " << payload;
         return armonik::api::worker::ProcessStatus(err.str());
       }
 
@@ -150,12 +150,15 @@ public:
       int ncpu = env_int("CHM_NCPU", (int)std::max(1u, std::thread::hardware_concurrency()));
       int ngpu = env_int("CHM_NGPU", 0);
 
+      // ----------------------------------------------------------------------
       // Option : aligner sur le nombre de threads BLAS si précisé
-      int blas_threads = env_int("OPENBLAS_NUM_THREADS",
-                          env_int("MKL_NUM_THREADS",
-                          env_int("OMP_NUM_THREADS", ncpu)));
-      if (blas_threads > 0)
-        ncpu = std::min(ncpu, blas_threads);
+      // int blas_threads = env_int("OPENBLAS_NUM_THREADS",
+      //                    env_int("MKL_NUM_THREADS",
+      //                    env_int("OMP_NUM_THREADS", ncpu)));
+      //if (blas_threads > 0)
+      //  ncpu = std::min(ncpu, blas_threads);
+      // ----------------------------------------------------------------------
+
 
       // Logs d'environnement et paramètres
       std::cout << "[CholeskyWorker] " << now_ts()
@@ -189,25 +192,22 @@ public:
       // ----------------------------------------------------------------------
       // 4) Création et remplissage de la matrice SPD
       // ----------------------------------------------------------------------
-      CHAMELEON_Desc_Create(&descA, NULL, ChamRealDouble,
-                            mb, nb, bsiz, lm, ln, ioff, joff, m, n, p, q);
+      CHAMELEON_Desc_Create(&descA, NULL, ChamRealDouble,mb, nb, bsiz, lm, ln, ioff, joff, m, n, p, q);
       CHAMELEON_dplgsy_Tile((double)N, ChamLower, descA, seed);
 
       // Copie pour validation
-      CHAMELEON_Desc_Create(&descAorig, NULL, ChamRealDouble,
-                            mb, nb, bsiz, lm, ln, ioff, joff, m, n, p, q);
+      CHAMELEON_Desc_Create(&descAorig, NULL, ChamRealDouble,mb, nb, bsiz, lm, ln, ioff, joff, m, n, p, q);
       CHAMELEON_dlacpy_Tile(ChamUpperLower, descA, descAorig);
 
       // ----------------------------------------------------------------------
-      // 5) Factorisation Cholesky LLᵀ et chronométrage
+      // 5) Factorisation Cholesky et chronométrage
       // ----------------------------------------------------------------------
       struct timespec start{}, end{};
       clock_gettime(CLOCK_MONOTONIC, &start);
       info = CHAMELEON_dpotrf_Tile(ChamLower, descA);
       clock_gettime(CLOCK_MONOTONIC, &end);
 
-      double time_sec = (end.tv_sec - start.tv_sec)
-                      + (end.tv_nsec - start.tv_nsec) / 1e9;
+      double time_sec = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
       const double gflops = (1.0/3.0) * (double)N * (double)N * (double)N / (time_sec * 1e9);
 
       // ----------------------------------------------------------------------
@@ -215,8 +215,7 @@ public:
       // ----------------------------------------------------------------------
       double normA = CHAMELEON_dlange_Tile(ChamInfNorm, descAorig);
 
-      CHAMELEON_Desc_Create(&descR, NULL, ChamRealDouble,
-                            mb, nb, bsiz, lm, ln, ioff, joff, m, n, p, q);
+      CHAMELEON_Desc_Create(&descR, NULL, ChamRealDouble, mb, nb, bsiz, lm, ln, ioff, joff, m, n, p, q);
       CHAMELEON_dlacpy_Tile(ChamLower, descA, descR);
       CHAMELEON_dlauum_Tile(ChamLower, descR); // R ← L * Lᵀ
       CHAMELEON_dgeadd_Tile(ChamNoTrans, -1.0, descR, 1.0, descAorig); // Aorig ← Aorig - LLᵀ
@@ -241,6 +240,7 @@ public:
           << "N=" << N << ", NB=" << NB << "\n"
           << "Time=" << time_sec << " s\n"
           << "Perf=" << gflops << " Gflop/s\n";
+
       out.setf(std::ios::scientific); out.precision(3);
       out << "RelError=" << relative_error << "\n"
           << "Status=" << (info == 0 ? "OK" : ("CHAMELEON_dpotrf_Tile info=" + std::to_string(info))) << "\n";
@@ -264,9 +264,11 @@ public:
       // ----------------------------------------------------------------------
       // 10) Retourner le statut d'exécution
       // ----------------------------------------------------------------------
-      if (info != 0) {
+      if (info != 0) 
+      {
         return armonik::api::worker::ProcessStatus("CHAMELEON_dpotrf_Tile failed with info=" + std::to_string(info));
       }
+      
       return armonik::api::worker::ProcessStatus::Ok;
 
     } catch (const std::exception &e) {
@@ -279,55 +281,30 @@ public:
 
 
 // ============================================================================
-//  Point d'entrée du programme : main()
-// ============================================================================
-// Ce main initialise la configuration ArmoniK pour le worker, démarre le serveur
-// gRPC, et attend les tâches envoyées par ArmoniK.Core.
+// Ce main initialise la configuration ArmoniK pour le worker
 // ============================================================================
 int main() {
-  // --------------------------------------------------------------------------
-  // 1) Message d'initialisation
-  // --------------------------------------------------------------------------
-  // Affiche dans la sortie standard que le worker démarre, avec la version
-  // de gRPC utilisée. Utile pour vérifier la compatibilité et pour le logging.
+  // Initialisation
   std::cout << "CholeskyWorker started. gRPC version = " << grpc::Version() << "\n";
 
-  // --------------------------------------------------------------------------
-  // 2) Préparation de la configuration ArmoniK
-  // --------------------------------------------------------------------------
+  // Prépare et charge la configuration + ajoute les variables d'environnement.
   armonik::api::common::utils::Configuration config;
-
-  // Charge la configuration depuis un fichier JSON (/appsettings.json)
-  // puis surcharge avec les variables d'environnement (add_env_configuration()).
   config.add_json_configuration("/appsettings.json").add_env_configuration();
 
   // Définit explicitement l'adresse des sockets Unix pour communiquer :
-  //  - avec le "Worker Channel" (réception de tâches)
-  //  - avec l'"Agent Channel" (interactions avec ArmoniK.Core : envoi de résultats,
-  //    création de nouvelles tâches, récupération de données, etc.)
   config.set("ComputePlane__WorkerChannel__Address", "/cache/armonik_worker.sock");
   config.set("ComputePlane__AgentChannel__Address", "/cache/armonik_agent.sock");
 
-  // --------------------------------------------------------------------------
-  // 3) Lancement du serveur Worker
-  // --------------------------------------------------------------------------
+  // Crée et lance un serveur Worker qui utilisera CholeskyWorker pour chaque tâche reçue.
   try {
-    // Crée et lance un serveur Worker qui utilisera notre classe CholeskyWorker
-    // pour traiter chaque tâche reçue.
-    // - create<CholeskyWorker>(config) : instancie un WorkerServer avec la classe donnée
-    // - run() : démarre la boucle d'écoute et de traitement des tâches
     armonik::api::worker::WorkerServer::create<CholeskyWorker>(config)->run();
 
+  // Capture toute exception survenue 
   } catch (const std::exception &e) {
-    // Capture toute exception survenue pendant le lancement ou l'exécution du serveur
     std::cerr << "Error in worker: " << e.what() << std::endl;
   }
 
-  // --------------------------------------------------------------------------
-  // 4) Fermeture
-  // --------------------------------------------------------------------------
-  // Si on arrive ici, c'est que le serveur s'est arrêté (arrêt normal ou erreur)
+  // Fermeture
   std::cout << "Stopping Server..." << std::endl;
   return 0;
 }
-// Fin du fichier CholeskyWorker.cpp
