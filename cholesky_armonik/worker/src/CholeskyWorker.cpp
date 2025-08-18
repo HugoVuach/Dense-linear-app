@@ -6,7 +6,7 @@
 #include <memory>     // Gestion mémoire intelligente (std::unique_ptr, std::shared_ptr)
 #include <sstream>    // Flux de chaînes pour parser/formatter des données en texte
 #include <string>     // Manipulation de chaînes de caractères std::string
-#include <vector>     // Conteneur tableau dynamique std::vector
+#include <vector>     // Conteneur tableau dynamique 
 #include <stdexcept>  // Classes d'exceptions standard (std::runtime_error, etc.)
 #include <cmath>      // Fonctions mathématiques 
 #include <ctime>      // Fonctions liées au temps/calendrier 
