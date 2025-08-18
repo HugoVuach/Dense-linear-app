@@ -210,13 +210,12 @@ static void create_desc_1block(CHAM_desc_t** desc, double* ptr, int B) {
 
 
 
-// ------------------------------ Worker ------------------------------
-
+// ============================================================================
+//  Classe : DAGCholeskyWorker
+// ============================================================================
 class DagCholeskyWorker : public armonik::api::worker::ArmoniKWorker {
 public:
-  // Le constructeur reçoit le stub Agent (gRPC) et le passe à la classe de base
-  explicit DagCholeskyWorker(std::unique_ptr<armonik::api::grpc::v1::agent::Agent::Stub> agent)
-      : ArmoniKWorker(std::move(agent)) {}
+  explicit DagCholeskyWorker(std::unique_ptr<armonik::api::grpc::v1::agent::Agent::Stub> agent): ArmoniKWorker(std::move(agent)) {}
 
   // Execute() est appelée pour *chaque tâche* que le Compute Plane assigne à ce worker
   armonik::api::worker::ProcessStatus Execute(armonik::api::worker::TaskHandler &taskHandler) override {
@@ -250,24 +249,36 @@ public:
       else return armonik::api::worker::ProcessStatus("Unknown op=" + op);
 
       // ----------------------------------------------------------------------
-      // 2) Initialiser Chameleon selon les ressources locales (ENV)
+      // 2) Déterminer ncpu/ngpu via variables d'environnement
       // ----------------------------------------------------------------------
       int ncpu = env_int("CHM_NCPU", (int)std::max(1u, std::thread::hardware_concurrency())); // // nb. threads CPU
       int ngpu = env_int("CHM_NGPU", 0);                                                       // // nb. GPUs visibles
-      // Harmonise avec les threads BLAS si définis (évite l'over-subscription)
-      int blas_threads = env_int("OPENBLAS_NUM_THREADS",
-                           env_int("MKL_NUM_THREADS",
-                           env_int("OMP_NUM_THREADS", ncpu)));
-      if (blas_threads > 0) ncpu = std::min(ncpu, blas_threads);
+
+      // ----------------------------------------------------------------------
+      // Option : aligner sur le nombre de threads BLAS si précisé
+      // int blas_threads = env_int("OPENBLAS_NUM_THREADS",
+      //                    env_int("MKL_NUM_THREADS",
+      //                    env_int("OMP_NUM_THREADS", ncpu)));
+      //if (blas_threads > 0)
+      //  ncpu = std::min(ncpu, blas_threads);
+      // ----------------------------------------------------------------------
 
       std::cout << "[DagWorker] init CHAMELEON ncpu=" << ncpu << " ngpu=" << ngpu
                 << " (BLAS_THREADS=" << blas_threads << ")\n";
+
+      if (bsiz != mb * nb) {
+        std::cout << "[CholeskyWorker] Warning: bsiz(" << bsiz << ") != mb*nb(" << (mb*nb) << ")\n";
+      }
+
+      // ----------------------------------------------------------------------
+      // 3) Initialisation de Chameleon avec ncpu/ngpu
+      // ----------------------------------------------------------------------                
       CHAMELEON_Init(ncpu, ngpu);
 
       int info = 0; // // code retour Chameleon (0 = OK)
 
       // ----------------------------------------------------------------------
-      // 3) Préparer les buffers et descripteurs pour les blocs requis
+      // 4) Préparer les buffers et descripteurs pour les blocs requis
       // ----------------------------------------------------------------------
       std::vector<double> A(B*B), L(B*B), C(B*B), Ai(B*B), Aj(B*B);
       CHAM_desc_t *dA=nullptr, *dL=nullptr, *dC=nullptr, *dAi=nullptr, *dAj=nullptr;
@@ -296,28 +307,86 @@ public:
       }
 
       // ----------------------------------------------------------------------
-      // 4) Exécuter le kernel Chameleon correspondant (Lower convention)
+      // 5) Exécuter le kernel Chameleon correspondant (Lower convention) 
+      // + chronométrage/Glops
+      // On mesure ici uniquement le temps du kernel Chameleon
+      // Le calcul est différent pour chaque méthode 
+      //     - POTRF(B) : 1/3 B*3
+      //     - PTRSM(B×B, Right, triangular B) : 1/2 B*3
+      //     - SYRK(B,B) : B*3
+      //     - GEMM(B,B,B) : 2 B*3
       // ----------------------------------------------------------------------
+      struct timespec t0{}, t1{};
+      auto Bd = static_cast<double>(B);  // B en double
+      double secs = 0.0;
+      double flops = 0.0;                // nombre d'opérations flottantes
+      double gflops = 0.0;               // GFLOP/s
+
+      
       if (op == "POTRF") {
         // Factorisation de Cholesky (diag) : A := L * Lᵀ (stocké en Lower)
+        clock_gettime(CLOCK_MONOTONIC, &t0);
         info = CHAMELEON_dpotrf_Tile(ChamLower, dA);
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+
         if (info != 0) throw std::runtime_error("dpotrf info=" + std::to_string(info));
+
+        secs  = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
+        flops = (1.0/3.0) * Bd*Bd*Bd;         // ~ B^3 / 3
+        gflops = flops / (secs * 1e9);
+
+        std::cout << "[DagWorker] POTRF B=" << B
+                  << " time=" << secs << " s"
+                  << " perf=" << gflops << " GF/s\n";
+
         upload_blob(taskHandler, out, serialize_block(A)); // // publie L_kk
       }
       else if (op == "TRSM") {
         // "Descente" : Aik := Aik * inv(Lkkᵀ)  (Right,Lower,Trans,NonUnit)
+        clock_gettime(CLOCK_MONOTONIC, &t0);
         CHAMELEON_dtrsm_Tile(ChamRight, ChamLower, ChamTrans, ChamNonUnit, 1.0, dL, dA);
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+
+        secs  = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
+        flops = 0.5 * Bd*Bd*Bd;               // ~ B^3 / 2  (triangular solve par ligne)
+        gflops = flops / (secs * 1e9);
+
+        std::cout << "[DagWorker] TRSM  B=" << B
+                  << " time=" << secs << " s"
+                  << " perf=" << gflops << " GF/s\n";
+
         upload_blob(taskHandler, out, serialize_block(A)); // // publie L_ik
       }
       else if (op == "SYRK") {
         // Mise à jour diagonale : Cii := Cii - Aik * Aikᵀ
+        clock_gettime(CLOCK_MONOTONIC, &t0);
         CHAMELEON_dsyrk_Tile(ChamLower, ChamNoTrans, -1.0, dA, 1.0, dC);
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+
+        secs  = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
+        flops = Bd*Bd*Bd;                     // ~ B^3 (demi-GEMM sur la partie triangulaire)
+        gflops = flops / (secs * 1e9);
+
+        std::cout << "[DagWorker] SYRK  B=" << B
+                  << " time=" << secs << " s"
+                  << " perf=" << gflops << " GF/s\n";
+
         upload_blob(taskHandler, out, serialize_block(C)); // // publie Cii maj
       }
       else { // GEMM
         // Mise à jour hors diagonale : Cij := Cij - Aik * Ajkᵀ
+        clock_gettime(CLOCK_MONOTONIC, &t0);
         CHAMELEON_dgemm_Tile(ChamNoTrans, ChamTrans, -1.0, dAi, dAj, 1.0, dC);
-        upload_blob(taskHandler, out, serialize_block(C)); // // publie Cij maj
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+
+        secs  = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
+        flops = 2.0 * Bd*Bd*Bd;               // 2 * B^3 (mult + add)
+        gflops = flops / (secs * 1e9);
+
+        std::cout << "[DagWorker] GEMM  B=" << B
+                  << " time=" << secs << " s"
+                  << " perf=" << gflops << " GF/s\n";        
+            upload_blob(taskHandler, out, serialize_block(C)); // // publie Cij maj
       }
 
       // ----------------------------------------------------------------------
