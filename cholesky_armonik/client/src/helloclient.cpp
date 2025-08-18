@@ -50,11 +50,28 @@ int main() {
     resultsClient.upload_result_data(session_id, results["payload"], "hello");
     logger.info("Uploaded payload.");
 
+
+
+
+
+
+
+
     auto task_info = tasksClient.submit_tasks(session_id, {ak_common::TaskCreation{results["payload"], {results["output"]}}})[0];
     logger.info("Task submitted.");
+
+
+    
     logger.info("Going to wait for result with id = " + results["output"] );
     eventsClient.wait_for_result_availability(session_id, {results["output"]});  
     
+
+
+
+
+
+
+
     logger.info("Finished waiting.");
     std::string taskResult = resultsClient.download_result_data(session_id, {results["output"]});
     logger.info("Got result = " + taskResult);
