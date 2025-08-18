@@ -5,51 +5,115 @@
 //  Compute via Chameleon (Tile API) — backend StarPU/OpenMP selon build
 // ============================================================================
 
-#include <iostream>   // // logs console
-#include <sstream>    // // parsing payload k=v
-#include <string>     // // std::string
-#include <vector>     // // buffers de blocs
-#include <map>        // // dictionnaire k=v
-#include <stdexcept>  // // exceptions
-#include <cstdlib>    // // getenv
-#include <thread>     // // hardware_concurrency
-#include <cstring>    // // memcpy
-#include <ctime>      // // horodatage
+// ============================================================================
+//  Inclusions standard C++
+// ============================================================================
+#include <iostream>   // Flux d'entrée/sortie standard (std::cout, std::cerr, etc.)
+#include <memory>     // Gestion mémoire intelligente (std::unique_ptr, std::shared_ptr)
+#include <sstream>    // Flux de chaînes pour parser/formatter des données en texte
+#include <string>     // Manipulation de chaînes de caractères std::string
+#include <vector>     // Conteneur tableau dynamique 
+#include <map>        // dictionnaire k=v
+#include <stdexcept>  // Classes d'exceptions standard (std::runtime_error, etc.)
+#include <cmath>      // Fonctions mathématiques #include <cstdlib>    // // getenv
+#include <thread>     // Gestion des threads et requêtes sur le hardware 
+#include <cstring>    // Memcpy
+#include <cstdlib>    // Fonctions utilitaires standard 
+#include <ctime>      // Fonctions liées au temps/calendrier 
 
-// ------------------------------ gRPC & ArmoniK SDK ------------------------------
-#include <grpcpp/grpcpp.h>
-#include "grpcpp/support/sync_stream.h"
+// ============================================================================
+//  Inclusions spécifiques gRPC
+// ============================================================================
 
-#include "objects.pb.h"                 // // Protobuf générés (messages/services)
-#include "utils/WorkerServer.h"         // // Serveur worker ArmoniK (boucle d'exécution)
-#include "Worker/ArmoniKWorker.h"       // // Classe de base à dériver
-#include "Worker/ProcessStatus.h"       // // Statut de fin d'exécution d'une tâche
-#include "Worker/TaskHandler.h"         // // Contexte de tâche (payload, I/O résultats)
-#include "exceptions/ArmoniKApiException.h" // // Exceptions spécifiques SDK
+#include <grpcpp/grpcpp.h>                 // API principale gRPC pour C++
+#include "grpcpp/support/sync_stream.h"    // Support pour les flux gRPC synchrones
+#include "objects.pb.h"                    // Définition des messages gRPC 
 
-// ------------------------------ Chameleon (C) ------------------------------
-extern "C" {
-#include <chameleon.h>                  // // API Tile de Chameleon
+// ============================================================================
+//  Inclusions spécifiques à ArmoniK (SDK C++)
+// ============================================================================
+
+#include "utils/WorkerServer.h"             // Serveur Worker ArmoniK 
+#include "Worker/ArmoniKWorker.h"           // Classe de base pour implémenter un Worker personnalisé
+#include "Worker/ProcessStatus.h"           // Statut retourné après exécution d'une tâche
+#include "Worker/TaskHandler.h"             // Objet représentant le contexte d'une tâche (payload, résultats attendus...)
+#include "exceptions/ArmoniKApiException.h" // Gestion des exceptions spécifiques à l'API ArmoniK
+
+
+
+// ============================================================================
+//  Inclusions spécifiques à la bibliothèque Chameleon
+// ============================================================================
+
+// Chameleon est une bibliothèque HPC orientée calculs matriciels denses sur 
+// architectures multi-core et hétérogènes (CPU + GPU).
+// On utilise 'extern "C"' pour indiquer au compilateur C++ que les fonctions
+// déclarées dans 'chameleon.h' suivent la convention de linkage du langage C
+// afin d'éviter que le compilateur C++ applique le "name mangling",
+// ce qui garantit que l'édition de liens (linker) trouve correctement les symboles
+// définis dans la bibliothèque Chameleon compilée en C.
+
+extern "C" { 
+#include <chameleon.h>   
 }
+
 
 // ------------------------------ Utils ------------------------------
 
-// Récupère un entier depuis l'environnement (fallback si absent/illégal)
+// ============================================================================
+//  Fonction utilitaire : env_int
+// ============================================================================
+// Lecture d'une variable d'environnement et conversion en entier positif.
+// Utile pour passer ngpu & ncpu en variables d'environnement
+//
+// Paramètres :
+//  - key    : nom de la variable d'environnement à lire.
+//  - defval : valeur par défaut à utiliser si la variable n'existe pas ou
+//             si sa conversion échoue.
+//
+// Fonctionnement :
+//  1) std::getenv(key) récupère la valeur associée à 'key' dans l'environnement.
+//     - Si elle existe → renvoie un pointeur vers une chaîne C.
+//     - Si elle n'existe pas → renvoie nullptr.
+//  2) Si la variable existe, on tente de la convertir en entier avec std::stoi().
+//     - std::stoi peut lever une exception si la conversion échoue (valeur non numérique).
+//     - En cas de succès, on prend le maximum entre 0 et la valeur convertie
+//       pour éviter les valeurs négatives.
+//  3) Si la variable n'existe pas ou que la conversion échoue, on renvoie la
+//     valeur par défaut 'defval'.
+
 static int env_int(const char* key, int defval) {
-  if (const char* s = std::getenv(key)) {
-    try { return std::max(0, std::stoi(s)); } catch (...) {}
+  if (const char* s = std::getenv(key)) {      // 1) Lecture de la variable d'environnement
+    try { 
+      return std::max(0, std::stoi(s));        // 2) Conversion en entier positif
+    } catch (...) {
+      // Conversion échouée → on ignore et on utilisera defval
+    }
   }
-  return defval;
+  return defval;                               // 3) Valeur par défaut
 }
 
-// Horodatage lisible pour les logs
+// ============================================================================
+//  Fonction utilitaire : now_ts
+// ============================================================================
+// Retourne la date et l'heure actuelles sous forme d'une chaîne formatée.
+//
+// Fonctionnement :
+// - std::time(nullptr) obtenir l'heure actuelle en secondes
+// - std::localtime(&t) convertit cette valeur en une structure 'tm'
+// - std::strftime(...) formate cette date dans le tampon 'buf' 
+
 static std::string now_ts() {
-  std::time_t t = std::time(nullptr);
-  char buf[64];
-  std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", std::localtime(&t));
-  return std::string(buf);
+  std::time_t t = std::time(nullptr);                          
+  char buf[64];                                                
+  std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S",         
+                std::localtime(&t));                          
+  return std::string(buf); 
 }
 
+// ============================================================================
+//  Fonction utilitaire : parse_kv_payload
+// ============================================================================
 // Parse une payload "k=v k=v ..." en map<string,string>
 static std::map<std::string,std::string> parse_kv_payload(const std::string& s) {
   std::map<std::string,std::string> kv;
@@ -62,18 +126,28 @@ static std::map<std::string,std::string> parse_kv_payload(const std::string& s) 
   return kv;
 }
 
+// ============================================================================
+//  Fonction utilitaire : to_int
+// ============================================================================
 // Accès sûrs aux champs typés de la map k=v
 static int to_int(const std::map<std::string,std::string>& kv, const char* key) {
   auto it = kv.find(key);
   if (it == kv.end()) throw std::runtime_error(std::string("Missing key '") + key + "'");
   return std::stoi(it->second);
 }
+
+// ============================================================================
+//  Fonction utilitaire : to_str
+// ============================================================================
 static std::string to_str(const std::map<std::string,std::string>& kv, const char* key) {
   auto it = kv.find(key);
   if (it == kv.end()) throw std::runtime_error(std::string("Missing key '") + key + "'");
   return it->second;
 }
 
+// ============================================================================
+//  Fonction utilitaire : deserialize_block
+// ============================================================================
 // Désérialise un bloc BxB de doubles depuis un blob binaire (row-major)
 static std::vector<double> deserialize_block(const std::string& blob, int B) {
   const size_t need = static_cast<size_t>(B) * static_cast<size_t>(B) * sizeof(double);
@@ -84,27 +158,57 @@ static std::vector<double> deserialize_block(const std::string& blob, int B) {
   return v;
 }
 
+// ============================================================================
+//  Fonction utilitaire : serialize_block
+// ============================================================================
 // Sérialise un bloc de doubles en blob binaire
 static std::string serialize_block(const std::vector<double>& v) {
   return std::string(reinterpret_cast<const char*>(v.data()), v.size()*sizeof(double));
 }
 
+// ============================================================================
+//  Fonction utilitaire : download_blob
+// ============================================================================
 // I/O via TaskHandler : lecture/écriture d'un résultat ArmoniK (blob)
 // - get_result(id).get() : télécharge le blob existant (entrée)
 // - send_result(id, data).get() : publie la sortie sous l'ID attendu
 static std::string download_blob(armonik::api::worker::TaskHandler& th, const std::string& resultId) {
   return th.get_result(resultId).get();
 }
+
+// ============================================================================
+//  Fonction utilitaire : upload_blob
+// ============================================================================
 static void upload_blob(armonik::api::worker::TaskHandler& th, const std::string& resultId, const std::string& data) {
   th.send_result(resultId, data).get();
 }
 
+// ============================================================================
+//  Fonction utilitaire : create_desc_1block
+// ============================================================================
 // Construit un descripteur Chameleon pour un *seul* bloc BxB en place (1 tuile)
 // - mb=nb=B ; bsiz=B*B ; grille 1x1 ; offsets 0.
 static void create_desc_1block(CHAM_desc_t** desc, double* ptr, int B) {
   int mb=B, nb=B, bsiz=B*B, lm=B, ln=B, ioff=0, joff=0, m=B, n=B, p=1, q=1;
   CHAMELEON_Desc_Create(desc, (void*)ptr, ChamRealDouble, mb, nb, bsiz, lm, ln, ioff, joff, m, n, p, q);
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 // ------------------------------ Worker ------------------------------
 
