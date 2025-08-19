@@ -4,37 +4,53 @@
 //  Chaque tâche lit/écrit des blocs via le store (IDs "blk/i/j").
 // ============================================================================
 
-#include "objects.pb.h"                 // // Définitions Protobuf/gRPC générées (messages, services)
-#include "utils/Configuration.h"        // // Helper pour charger config depuis JSON + variables d'environnement
-#include "logger/logger.h"              // // Logger ArmoniK (API)
-#include "logger/writer.h"              // // Sortie des logs (console, fichier, etc.)
-#include "logger/formatter.h"           // // Format des logs (plain text / json)
-#include "channel/ChannelFactory.h"     // // Fabrique pour créer le canal gRPC selon la configuration
-#include "sessions/SessionsClient.h"    // // Client gRPC pour créer/fermer les sessions
-#include "tasks/TasksClient.h"          // // Client gRPC pour soumettre des tâches
-#include "results/ResultsClient.h"      // // Client gRPC pour créer/charger/sauver des résultats (blobs)
-#include "events/EventsClient.h"        // // Client gRPC pour attendre des événements (ex: résultat disponible)
+// ============================================================================
+//  Inclusions standard C++
+// ============================================================================
+#include <string>                       // Manipulation de chaînes de caractères std::string
+#include <sstream>                      // Flux de chaînes pour parser/formatter des données en texte
+#include <vector>                       // Conteneur tableau dynamique
+#include <iostream>                     // Flux d'entrée/sortie standard
 
-#include <map>                          // // std::map : dictionnaire nom→id de résultat
-#include <string>                       // // std::string
-#include <sstream>                      // // std::ostringstream pour construire des payloads texte
-#include <vector>                       // // std::vector : listes de noms/ids, buffers, etc.
+// ============================================================================
+//  Inclusions spécifiques à ArmoniK & gRPC
+// ============================================================================
+#include "objects.pb.h"                 // Messages Protobuf (définitions gRPC)
+#include "utils/Configuration.h"        // Gestion de la configuration (JSON, ENV)
+#include "logger/logger.h"              // Logger ArmoniK (interface)
+#include "logger/writer.h"              // Writer (console, fichier)
+#include "logger/formatter.h"           // Format du logging (plain/json)
+#include "channel/ChannelFactory.h"     // Usine à canaux gRPC selon la config
+#include "sessions/SessionsClient.h"    // Client gRPC pour la gestion des sessions
+#include "tasks/TasksClient.h"          // Client gRPC pour la soumission de tâches
+#include "results/ResultsClient.h"      // Client gRPC pour la gestion des résultats
+#include "events/EventsClient.h"        // Client gRPC pour s'abonner/attendre des événements
+
+#include <map>                          //  std::map pour manipuler les IDs de résultats
 #include <random>                       // // Génération de blocs aléatoires (POC)
-#include <iostream>                     // // (optionnel) sorties console
+#include <algorithm>                    // // Algorithmes STL (std::shuffle, std::generate)
+
+
 
 // Alias de namespaces pour alléger l'écriture
 namespace ak_common = armonik::api::common;
 namespace ak_client = armonik::api::client;
 namespace ak_grpc   = armonik::api::grpc::v1;
 
-// ------------------------------ Utilitaires ------------------------------
+// ------------------------------ Utils ------------------------------
 
+// ============================================================================
+//  Fonction utilitaire : blk_id
+// ============================================================================
 // Construit un ID canonique pour un bloc (i,j) du triangle inférieur
 // Convention : "blk/<i>/<j>"
 static std::string blk_id(int i, int j) {
   std::ostringstream oss; oss << "blk/" << i << "/" << j; return oss.str();
 }
 
+// ============================================================================
+//  Fonction utilitaire : make_payload_potrf
+// ============================================================================
 // Construit la payload d'une tâche POTRF sur le bloc diagonal (k,k)
 // Format texte k=v séparés par espaces, facile à parser côté worker
 static std::string make_payload_potrf(int k, int B) {
@@ -45,6 +61,9 @@ static std::string make_payload_potrf(int k, int B) {
   return oss.str();
 }
 
+// ============================================================================
+//  Fonction utilitaire : make_payload_trsm
+// ============================================================================
 // Payload TRSM pour le bloc (i,k) en utilisant Lkk (k,k)
 static std::string make_payload_trsm(int i, int k, int B) {
   std::ostringstream oss;
@@ -55,6 +74,9 @@ static std::string make_payload_trsm(int i, int k, int B) {
   return oss.str();
 }
 
+// ============================================================================
+//  Fonction utilitaire : make_payload_syrk
+// ============================================================================
 // Payload SYRK pour la mise à jour du bloc diagonal (i,i) avec Aik
 static std::string make_payload_syrk(int i, int k, int B) {
   std::ostringstream oss;
@@ -65,6 +87,9 @@ static std::string make_payload_syrk(int i, int k, int B) {
   return oss.str();
 }
 
+// ============================================================================
+//  Fonction utilitaire : make_payload_gemm
+// ============================================================================
 // Payload GEMM pour la mise à jour d'un bloc hors diagonale (i,j)
 static std::string make_payload_gemm(int i, int j, int k, int B) {
   std::ostringstream oss;
@@ -76,6 +101,9 @@ static std::string make_payload_gemm(int i, int j, int k, int B) {
   return oss.str();
 }
 
+// ============================================================================
+//  Fonction utilitaire : gen_random_block
+// ============================================================================
 // Génère un bloc B×B aléatoire (POC) : utilisé pour injecter une matrice SPD-ish initiale
 static std::vector<double> gen_random_block(int B, double scale=1.0) {
   static std::mt19937_64 rng(42);            // // RNG fixe pour reproductibilité
@@ -85,6 +113,9 @@ static std::vector<double> gen_random_block(int B, double scale=1.0) {
   return X;
 }
 
+// ============================================================================
+//  Fonction utilitaire : serialize_block
+// ============================================================================
 // Sérialise un bloc de doubles (row-major) en chaîne binaire (bytes) pour ResultsStore
 static std::string serialize_block(const std::vector<double>& block) {
   return std::string(reinterpret_cast<const char*>(block.data()),
@@ -94,53 +125,62 @@ static std::string serialize_block(const std::vector<double>& block) {
 // ------------------------------ Programme principal ------------------------------
 
 int main() {
-  // -------------------- Logger + Configuration --------------------
-  ak_common::logger::Logger logger{
-    ak_common::logger::writer_console(),         // // Log sur la console
-    ak_common::logger::formatter_plain(true)     // // Format simple avec horodatage
-  };
+  // --------------------------------------------------------------------------
+  // 1) Initialisation du logger et de la configuration
+  // --------------------------------------------------------------------------
+  ak_common::logger::Logger logger{ak_common::logger::writer_console(),ak_common::logger::formatter_plain(true)};
   ak_common::utils::Configuration config;
-  config.add_json_configuration("/appsettings.json") // // Charge /appsettings.json si présent
-        .add_env_configuration();                    // // Écrase/complète avec variables d'environnement
+  config.add_json_configuration("/appsettings.json").add_env_configuration();
   logger.info("Initialized client config.");
 
-  // Crée le canal gRPC vers ArmoniK à partir de la config (adresse, TLS...).
+  // --------------------------------------------------------------------------
+  // 2) Création du canal gRPC vers ArmoniK 
+  // --------------------------------------------------------------------------
   ak_client::ChannelFactory channelFactory(config, logger);
   std::shared_ptr<::grpc::Channel> channel = channelFactory.create_channel();
 
-  // -------------------- Options de session / tâches --------------------
+  // --------------------------------------------------------------------------
+  // 3) Préparation des options de tâche (TaskOptions) et de la session
+  // --------------------------------------------------------------------------
   ak_grpc::TaskOptions taskOptions;
-  const std::string part_cpu = "cholesky-cpu";   // // Partition cible par défaut (à adapter)
+  
+  // Noms des partitions à utiliser
+  const std::string part_cpu = "cholesky-cpu";   // // Partition cible 
   const std::string part_gpu = "cholesky-cpu";   // // Exemple si tu as une partition GPU dédiée
   logger.info("Partitions: cpu=" + part_cpu + ", gpu=" + part_gpu);
 
-  taskOptions.mutable_max_duration()->set_seconds(3600);  // // Timeout max par tâche (1h)
-  taskOptions.set_max_retries(3);                         // // Retries en cas d'échec
-  taskOptions.set_priority(1);                            // // Priorité relative
-  taskOptions.set_partition_id(part_cpu);                 // // Partition par défaut pour la session
+  // Paramètres généraux de la tâche
+  taskOptions.mutable_max_duration()->set_seconds(3600); // Durée max 
+  taskOptions.set_max_retries(3);                        // 3 tentatives si échec
+  taskOptions.set_priority(1);                           // Priorité                        
+  taskOptions.set_partition_id(part_cpu);                // Partition par défaut pour la session
 
-  // Métadonnées applicatives (pour traçabilité/monitoring)
-  taskOptions.set_application_name("cholesky-dag");
-  taskOptions.set_application_version("1.0");
+  // Métadonnées
+  taskOptions.set_application_name("cholesky-dag");      // Nom logique de l'application    
+  taskOptions.set_application_version("1.0");            // Version
   taskOptions.set_application_namespace("benchmarks");
 
-  // -------------------- Création des clients gRPC ArmoniK --------------------
+  // --------------------------------------------------------------------------
+  // 4) Construction des clients ArmoniK (Sessions / Tasks / Results / Events)
+  // --------------------------------------------------------------------------
   ak_client::TasksClient    tasksClient(   ak_grpc::tasks::Tasks::NewStub(channel));
   ak_client::ResultsClient  resultsClient( ak_grpc::results::Results::NewStub(channel));
   ak_client::SessionsClient sessionsClient(ak_grpc::sessions::Sessions::NewStub(channel));
   ak_client::EventsClient   eventsClient(  ak_grpc::events::Events::NewStub(channel));
 
-  // -------------------- Paramètres problème --------------------
+  // --------------------------------------------------------------------------
+  // 5) -------------------- Paramètres problème --------------------
+  // -------------------------------------------------------------------------
   const int N  = 2048;                     // // Taille globale de la matrice
   const int B  = 256;                      // // Taille de bloc (tuile) carrée
   const int Nb = (N + B - 1) / B;          // // Nombre de blocs par dimension (ici suppose N % B == 0)
-  logger.info("Problem: N=" + std::to_string(N) +
-              " B=" + std::to_string(B) +
-              " Nb=" + std::to_string(Nb));
+  logger.info("Problem: N=" + std::to_string(N) + " B=" + std::to_string(B) + " Nb=" + std::to_string(Nb));
 
-  // -------------------- Ouverture d'une session --------------------
-  // On précise la/les partitions autorisées (ici, CPU)
-  std::string session_id = sessionsClient.create_session(taskOptions, {part_cpu});
+  // --------------------------------------------------------------------------
+  // 5) Création d'une session d'exécution
+  // --------------------------------------------------------------------------
+  // On précise la/les partitions autorisées (ici, default)
+  std::string session_id = sessionsClient.create_session(taskOptions, {default_partition});
   logger.info("Session id = " + session_id);
 
   // -------------------- Enregistrement des IDs de résultats (blocs) --------------------
