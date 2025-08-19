@@ -243,8 +243,8 @@ int main() {
   std::cout << "DagCholeskyWorker started. gRPC version = " << grpc::Version() << "\n";
   armonik::api::common::utils::Configuration config;
   config.add_json_configuration("/appsettings.json").add_env_configuration();
-  config.set("ComputePlane__WorkerChannel__Address", "/cache/armonik_worker.sock"); // // socket Worker
-  config.set("ComputePlane__AgentChannel__Address",  "/cache/armonik_agent.sock");  // // socket Agent
+  config.set("ComputePlane__WorkerChannel__Address", "/cache/armonik_worker.sock"); 
+  config.set("ComputePlane__AgentChannel__Address",  "/cache/armonik_agent.sock");  
 
   try {
     armonik::api::worker::WorkerServer::create<DagCholeskyWorker>(config)->run();
