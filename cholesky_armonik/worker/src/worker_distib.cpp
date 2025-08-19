@@ -31,11 +31,6 @@ extern "C" {
 
 
 
-// ============================================================================
-//  Fonctions utilitaires
-// ============================================================================
-
-
 // Lecture d'une variable d'environnement et conversion en entier positif.
 // defval, valeur par défaut à utiliser si la variable n'existe pas
 static int env_int(const char* key, int defval) {
@@ -82,7 +77,7 @@ static std::string to_str(const std::map<std::string,std::string>& kv, const cha
   return it->second;
 }
 
-// Désérialise un bloc BxB de doubles depuis un blob binaire 
+// Désérialise un bloc blob binaire -> doubles   
 static std::vector<double> deserialize_block(const std::string& blob, int B) {
   const size_t need = static_cast<size_t>(B) * static_cast<size_t>(B) * sizeof(double);
   if (blob.size() != need)
@@ -92,7 +87,7 @@ static std::vector<double> deserialize_block(const std::string& blob, int B) {
   return v;
 }
 
-// Sérialise un bloc de doubles en blob binaire
+// Sérialise un bloc  doubles -> blob binaire
 static std::string serialize_block(const std::vector<double>& v) {
   return std::string(reinterpret_cast<const char*>(v.data()), v.size()*sizeof(double));
 }
@@ -129,7 +124,8 @@ public:
       const int B = to_int(kv, "B");     
 
 
-      // IDs de résultats (entrées/sortie) selon l'opération
+      // extraire les identifiants des entrées/sorties selon l’opération BLAS/Cholesky demandée
+      // = dispatcher des dépendances
       //  - POTRF : in=blk/k/k → out=blk/k/k
       //  - TRSM  : inL=blk/k/k, inA=blk/i/k → out=blk/i/k
       //  - SYRK  : inC=blk/i/i, inA=blk/i/k → out=blk/i/i
@@ -144,8 +140,6 @@ public:
       int ncpu = env_int("CHM_NCPU", (int)std::max(1u, std::thread::hardware_concurrency())); 
       int ngpu = env_int("CHM_NGPU", 0);                                                       
 
-
-                
       CHAMELEON_Init(ncpu, ngpu);
       int info = 0; 
       std::vector<double> A(B*B), L(B*B), C(B*B), Ai(B*B), Aj(B*B);
