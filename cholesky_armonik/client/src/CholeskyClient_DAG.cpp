@@ -180,7 +180,7 @@ int main() {
   // --------------------------------------------------------------------------
   // 6) Création d'une session d'exécution
   // --------------------------------------------------------------------------
-  // On précise la/les partitions autorisées
+  // On précise les partitions autorisées
   std::string session_id = sessionsClient.create_session(taskOptions, {part_cpu, part_gpu});
   logger.info("Session id = " + session_id);
 
@@ -190,12 +190,12 @@ int main() {
   for (int i=0;i<Nb;++i)
     for (int j=0;j<=i;++j)
       all_block_names.push_back(blk_id(i,j));
-  // Retour : map nom → resultId (utilisés ensuite pour upload/download)
   std::map<std::string,std::string> id_map =
       resultsClient.create_results_metadata(session_id, all_block_names);
 
-  // -------------------- Helper : soumettre une tâche dans une partition donnée --------------------
-  auto submit_in_partition = [&](const std::string& payload_name,
+
+  // -------------------- Soumettre une tâche dans une partition donnée --------------------
+  auto submit_partition = [&](const std::string& payload_name,
                                  const std::string& payload_text,
                                  const std::vector<std::string>& out_ids,
                                  const std::string& partition_id)
@@ -247,7 +247,7 @@ int main() {
       std::string pl = make_payload_potrf(k, B);
       std::string payload_name = "payload/potrf/" + std::to_string(k);
 
-      submit_in_partition(payload_name, pl, { id_map[blk_id(k,k)] }, part_cpu);
+      submit_partition(payload_name, pl, { id_map[blk_id(k,k)] }, part_cpu);
       // Synchronisation : on attend le bloc diagonal factorisé
       eventsClient.wait_for_result_availability(session_id, { id_map[blk_id(k,k)] });
     }
@@ -258,7 +258,7 @@ int main() {
       std::string pl = make_payload_trsm(i, k, B);
       std::string payload_name = "payload/trsm/" + std::to_string(i) + "/" + std::to_string(k);
 
-      submit_in_partition(payload_name, pl, { id_map[blk_id(i,k)] }, part_cpu);
+      submit_partition(payload_name, pl, { id_map[blk_id(i,k)] }, part_cpu);
       trsm_out_ids.push_back(id_map[blk_id(i,k)]);
     }
     if (!trsm_out_ids.empty())
@@ -279,7 +279,7 @@ int main() {
                                  + std::to_string(i) + "/" + std::to_string(j)
                                  + "/" + std::to_string(k);
 
-        submit_in_partition(payload_name, pl, { id_map[blk_id(i,j)] }, part_for_update);
+        submit_partition(payload_name, pl, { id_map[blk_id(i,j)] }, part_for_update);
         upd_out_ids.push_back(id_map[blk_id(i,j)]);
       }
     }
