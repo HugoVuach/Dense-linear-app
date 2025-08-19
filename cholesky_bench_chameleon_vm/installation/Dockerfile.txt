@@ -5,7 +5,11 @@
 
 FROM ubuntu:24.04 AS builder
 
-ENV DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC CUDA_HOME=/usr/local/cuda
+ENV DEBIAN_FRONTEND=noninteractive \
+    TZ=Etc/UTC \
+    CUDA_HOME=/usr/local/cuda \
+    PATH=/usr/local/cuda/bin:$PATH \
+    LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential cmake git pkg-config \
@@ -24,21 +28,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     openmpi-bin libopenmpi-dev \
  && rm -rf /var/lib/apt/lists/*
 
-
 # OpenBLAS 
 RUN set -eux; cd /tmp; \
     git clone --depth 1 --branch v0.3.26 https://github.com/xianyi/OpenBLAS.git; \
     cd OpenBLAS; make USE_LAPACK=1 LAPACKE=1 -j"$(nproc)"; \
     make install PREFIX=/usr/local; ldconfig; rm -rf /tmp/OpenBLAS
 
-# CUDA toolkit
+# CUDA toolkit (nvcc et headers pour la compilation)
 RUN wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb && \
     dpkg -i cuda-keyring_1.1-1_all.deb && rm -f cuda-keyring_1.1-1_all.deb && \
     apt-get update && apt-get install -y --no-install-recommends cuda-toolkit-12-9 && \
     rm -rf /var/lib/apt/lists/*
-ENV PATH=/usr/local/cuda/bin:$PATH LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
 
-# hwloc + CUDA
+# hwloc avec support CUDA
 RUN set -eux; cd /tmp; \
     git clone --depth 1 https://github.com/open-mpi/hwloc.git; \
     cd hwloc; ./autogen.sh; \
@@ -81,6 +83,8 @@ RUN set -eux; cd /tmp; \
       -DSTARPU_DIR=/usr/local -DHWLOC_ROOT=/opt/hwloc_cuda; \
     make -j"$(nproc)"; make install; ldconfig; rm -rf /tmp/chameleon
 
+# IMPORTANT : ne pas copier le toolkit CUDA du builder vers le runtime
+RUN rm -rf /usr/local/cuda /usr/local/cuda-12.9 || true
 
 
 # =============================================================================
@@ -88,15 +92,16 @@ RUN set -eux; cd /tmp; \
 # =============================================================================
 FROM nvidia/cuda:12.9.0-runtime-ubuntu24.04 AS runtime
 
-ARG DEBIAN_FRONTEND=noninteractive
- RUN apt-get update && apt-get install -y --no-install-recommends \
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
     libnuma1 libgomp1 libevent-2.1-7t64 libcap2 libudev1 \
     libx11-6 libxext6 libxrender1 libxtst6 \
     libxml2 ocl-icd-libopencl1 libgfortran5 libquadmath0 \
     libpciaccess0 openmpi-bin pkg-config \
  && rm -rf /var/lib/apt/lists/*
 
-# Copy runtime artifacts from builder
+# Copy runtime artifacts from builder (sans CUDA toolkit)
 COPY --from=builder /usr/local/ /usr/local/
 COPY --from=builder /opt/hwloc_cuda/ /opt/hwloc_cuda/
 
@@ -111,6 +116,7 @@ ENV CUDA_HOME=/usr/local/cuda \
 
 WORKDIR /work
 CMD ["/bin/bash", "-lc", "echo 'CUDA:' && nvcc --version || true; echo 'MPI:' && mpicc --version | head -n1; echo 'StarPU:' && pkg-config --modversion starpu-1.4 || true; echo 'Chameleon:' && pkg-config --modversion chameleon || true"]
+
 
 # =============================================================================
 # Stage 3 — app-build - v6_test.c benchmark.c
@@ -146,4 +152,3 @@ COPY --from=app-build /app/v6_test /app/bench ./
 RUN mkdir -p /app/results
 
 CMD ["/bin/bash"]
-
