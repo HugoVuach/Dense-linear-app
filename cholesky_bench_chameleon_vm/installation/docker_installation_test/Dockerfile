@@ -5,11 +5,10 @@
 
 FROM ubuntu:24.04 AS builder
 
-ENV DEBIAN_FRONTEND=noninteractive \
-    TZ=Etc/UTC \
-    CUDA_HOME=/usr/local/cuda \
-    PATH=/usr/local/cuda/bin:$PATH \
-    LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
+ENV DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC 
+#    CUDA_HOME=/usr/local/cuda \
+#    PATH=/usr/local/cuda/bin:$PATH \
+#    LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential cmake git pkg-config \
@@ -41,6 +40,16 @@ RUN wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86
     apt-get update && apt-get install -y --no-install-recommends cuda-toolkit-12-9 && \
     rm -rf /var/lib/apt/lists/*
 
+# Rendre visibles les libs CUDA
+RUN printf "/usr/local/cuda/lib64\n/usr/local/lib\n" > /etc/ld.so.conf.d/cuda.conf && ldconfig
+
+# ENV propres (avec valeurs par défaut pour éviter UndefinedVar)
+ENV CUDA_HOME="/usr/local/cuda" \
+    PATH="/usr/local/cuda/bin:/opt/hwloc_cuda/bin:${PATH}" \
+    LD_LIBRARY_PATH="/usr/local/cuda/lib64:/opt/hwloc_cuda/lib:${LD_LIBRARY_PATH:-}" \
+    PKG_CONFIG_PATH="/usr/local/cuda/lib64/pkgconfig:/opt/hwloc_cuda/lib/pkgconfig:/usr/local/lib/pkgconfig:/usr/local/share/pkgconfig:${PKG_CONFIG_PATH:-}"
+
+
 # hwloc (version 2.x stable) avec CUDA, NVML désactivé
 RUN set -eux; cd /tmp; \
     git clone --branch hwloc-2.10.0 https://github.com/open-mpi/hwloc.git; \
@@ -50,23 +59,26 @@ RUN set -eux; cd /tmp; \
     make -j"$(nproc)"; make install; ldconfig; rm -rf /tmp/hwloc
 
 
-ENV PATH=/opt/hwloc_cuda/bin:$PATH \
-    LD_LIBRARY_PATH=/opt/hwloc_cuda/lib:$LD_LIBRARY_PATH \
-    PKG_CONFIG_PATH=/opt/hwloc_cuda/lib/pkgconfig:/usr/local/lib/pkgconfig:/usr/local/share/pkgconfig:/usr/local/cuda/lib64/pkgconfig:$PKG_CONFIG_PATH
+# ENV PATH=/opt/hwloc_cuda/bin:$PATH \
+#   LD_LIBRARY_PATH=/opt/hwloc_cuda/lib:$LD_LIBRARY_PATH \
+#    PKG_CONFIG_PATH=/opt/hwloc_cuda/lib/pkgconfig:/usr/local/lib/pkgconfig:/usr/local/share/pkgconfig:/usr/local/cuda/lib64/pkgconfig:$PKG_CONFIG_PATH
 
-# StarPU
+# StarPU (bindings Python désactivés)
 RUN set -eux; cd /tmp; \
-    git clone --depth 1 --branch starpu-1.4 https://gitlab.inria.fr/starpu/starpu.git; \
-    cd starpu; ./autogen.sh; \
-    ./configure --prefix=/usr/local \
-        --with-hwloc=/opt/hwloc_cuda \
-        --enable-cuda --enable-opencl --enable-mpi \
-        --with-cuda=/usr/local/cuda \
-        --disable-build-doc \
-        --disable-python \
-        --with-blas-lib="-lopenblas" \
-        --with-blas-inc="/usr/local/include"; \
-    make -j"$(nproc)"; make install; ldconfig; rm -rf /tmp/starpu
+  git clone --depth 1 --branch starpu-1.4 https://gitlab.inria.fr/starpu/starpu.git; \
+  cd starpu; ./autogen.sh; \
+  ./configure --prefix=/usr/local \
+      --with-hwloc=/opt/hwloc_cuda \
+      --enable-cuda --enable-opencl --enable-mpi \
+      --with-cuda=/usr/local/cuda \
+      --disable-build-doc \
+      --disable-python --without-python --disable-starpupy \
+      PYTHON=no \
+      --with-blas-lib="-lopenblas" \
+      --with-blas-inc="/usr/local/include"; \
+  make -j"$(nproc)"; \
+  mkdir -p /usr/local/lib/python3.12/site-packages || true; \
+  make install; ldconfig; rm -rf /tmp/starpu
 
 # Chameleon
 RUN set -eux; cd /tmp; \
@@ -87,8 +99,7 @@ RUN set -eux; cd /tmp; \
       -DSTARPU_DIR=/usr/local -DHWLOC_ROOT=/opt/hwloc_cuda; \
     make -j"$(nproc)"; make install; ldconfig; rm -rf /tmp/chameleon
 
-# IMPORTANT : ne pas copier le toolkit CUDA du builder vers le runtime
-RUN rm -rf /usr/local/cuda /usr/local/cuda-12.9 || true
+
 
 
 # =============================================================================
@@ -110,13 +121,22 @@ COPY --from=builder /usr/local/ /usr/local/
 COPY --from=builder /opt/hwloc_cuda/ /opt/hwloc_cuda/
 
 # Env (match builder installs in /usr/local)
-ENV CUDA_HOME=/usr/local/cuda \
-    HWLOC_PREFIX=/opt/hwloc_cuda \
-    STARPU_PREFIX=/usr/local \
-    CHAMELEON_DIR=/usr/local \
-    PATH=/usr/local/bin:/opt/hwloc_cuda/bin:/usr/local/cuda/bin:$PATH \
-    LD_LIBRARY_PATH=/opt/hwloc_cuda/lib:/usr/local/lib:/usr/local/lib64:/usr/local/cuda/lib64:$LD_LIBRARY_PATH \
-    PKG_CONFIG_PATH=/opt/hwloc_cuda/lib/pkgconfig:/usr/local/lib/pkgconfig:/usr/local/share/pkgconfig:/usr/local/cuda/lib64/pkgconfig:$PKG_CONFIG_PATH
+#ENV CUDA_HOME=/usr/local/cuda \
+    #HWLOC_PREFIX=/opt/hwloc_cuda \
+    #STARPU_PREFIX=/usr/local \
+    #CHAMELEON_DIR=/usr/local \
+#    PATH=/usr/local/bin:/opt/hwloc_cuda/bin:/usr/local/cuda/bin:$PATH \
+#    LD_LIBRARY_PATH=/opt/hwloc_cuda/lib:/usr/local/lib:/usr/local/lib64:/usr/local/cuda/lib64:$LD_LIBRARY_PATH \
+#    PKG_CONFIG_PATH=/opt/hwloc_cuda/lib/pkgconfig:/usr/local/lib/pkgconfig:/usr/local/share/pkgconfig:/usr/local/cuda/lib64/pkgconfig:$PKG_CONFIG_PATH
+# ENV runtime
+ENV CUDA_HOME="/usr/local/cuda" \
+    HWLOC_PREFIX="/opt/hwloc_cuda" \
+    STARPU_PREFIX="/usr/local" \
+    CHAMELEON_DIR="/usr/local" \
+    PATH="/usr/local/bin:/opt/hwloc_cuda/bin:/usr/local/cuda/bin:${PATH}" \
+    LD_LIBRARY_PATH="/opt/hwloc_cuda/lib:/usr/local/lib:/usr/local/lib64:/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}" \
+    PKG_CONFIG_PATH="/opt/hwloc_cuda/lib/pkgconfig:/usr/local/lib/pkgconfig:/usr/local/share/pkgconfig:/usr/local/cuda/lib64/pkgconfig:${PKG_CONFIG_PATH:-}"
+
 
 WORKDIR /work
 CMD ["/bin/bash", "-lc", "echo 'CUDA:' && nvcc --version || true; echo 'MPI:' && mpicc --version | head -n1; echo 'StarPU:' && pkg-config --modversion starpu-1.4 || true; echo 'Chameleon:' && pkg-config --modversion chameleon || true"]
@@ -127,12 +147,18 @@ CMD ["/bin/bash", "-lc", "echo 'CUDA:' && nvcc --version || true; echo 'MPI:' &&
 # =============================================================================
 FROM builder AS app-build
 
-ENV CHAMELEON_DIR=/usr/local \
-    STARPU_PREFIX=/usr/local \
-    CUDA_HOME=/usr/local/cuda \
-    PKG_CONFIG_PATH=/opt/hwloc_cuda/lib/pkgconfig:/usr/local/lib/pkgconfig:/usr/local/share/pkgconfig:/usr/local/cuda/lib64/pkgconfig:$PKG_CONFIG_PATH \
-    LD_LIBRARY_PATH=/opt/hwloc_cuda/lib:/usr/local/lib:/usr/local/lib64:/usr/local/cuda/lib64:$LD_LIBRARY_PATH \
-    PATH=/usr/local/bin:/opt/hwloc_cuda/bin:/usr/local/cuda/bin:$PATH
+#ENV CHAMELEON_DIR=/usr/local \
+  #  STARPU_PREFIX=/usr/local \
+   # CUDA_HOME=/usr/local/cuda \
+    #PKG_CONFIG_PATH=/opt/hwloc_cuda/lib/pkgconfig:/usr/local/lib/pkgconfig:/usr/local/share/pkgconfig:/usr/local/cuda/lib64/pkgconfig:$PKG_CONFIG_PATH \
+   # LD_LIBRARY_PATH=/opt/hwloc_cuda/lib:/usr/local/lib:/usr/local/lib64:/usr/local/cuda/lib64:$LD_LIBRARY_PATH \
+    #PATH=/usr/local/bin:/opt/hwloc_cuda/bin:/usr/local/cuda/bin:$PATH
+ENV CHAMELEON_DIR="/usr/local" \
+    STARPU_PREFIX="/usr/local" \
+    CUDA_HOME="/usr/local/cuda" \
+    PKG_CONFIG_PATH="/opt/hwloc_cuda/lib/pkgconfig:/usr/local/lib/pkgconfig:/usr/local/share/pkgconfig:/usr/local/cuda/lib64/pkgconfig:${PKG_CONFIG_PATH:-}" \
+    LD_LIBRARY_PATH="/opt/hwloc_cuda/lib:/usr/local/lib:/usr/local/lib64:/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}" \
+    PATH="/usr/local/bin:/opt/hwloc_cuda/bin:/usr/local/cuda/bin:${PATH}"
 
 WORKDIR /app
 COPY v6_test.c benchmark.c Makefile ./
@@ -144,12 +170,18 @@ RUN make -j"$(nproc)"
 # =============================================================================
 FROM runtime AS app
 
-ENV CHAMELEON_DIR=/usr/local \
-    STARPU_PREFIX=/usr/local \
-    CUDA_HOME=/usr/local/cuda \
-    PKG_CONFIG_PATH=/opt/hwloc_cuda/lib/pkgconfig:/usr/local/lib/pkgconfig:/usr/local/share/pkgconfig:/usr/local/cuda/lib64/pkgconfig:$PKG_CONFIG_PATH \
-    LD_LIBRARY_PATH=/opt/hwloc_cuda/lib:/usr/local/lib:/usr/local/lib64:/usr/local/cuda/lib64:$LD_LIBRARY_PATH \
-    PATH=/usr/local/bin:/opt/hwloc_cuda/bin:/usr/local/cuda/bin:$PATH
+#ENV CHAMELEON_DIR=/usr/local \
+ #   STARPU_PREFIX=/usr/local \
+  #  CUDA_HOME=/usr/local/cuda \
+   # PKG_CONFIG_PATH=/opt/hwloc_cuda/lib/pkgconfig:/usr/local/lib/pkgconfig:/usr/local/share/pkgconfig:/usr/local/cuda/lib64/pkgconfig:$PKG_CONFIG_PATH \
+   # LD_LIBRARY_PATH=/opt/hwloc_cuda/lib:/usr/local/lib:/usr/local/lib64:/usr/local/cuda/lib64:$LD_LIBRARY_PATH \
+    #PATH=/usr/local/bin:/opt/hwloc_cuda/bin:/usr/local/cuda/bin:$PATH
+ENV CHAMELEON_DIR="/usr/local" \
+    STARPU_PREFIX="/usr/local" \
+    CUDA_HOME="/usr/local/cuda" \
+    PKG_CONFIG_PATH="/opt/hwloc_cuda/lib/pkgconfig:/usr/local/lib/pkgconfig:/usr/local/share/pkgconfig:/usr/local/cuda/lib64/pkgconfig:${PKG_CONFIG_PATH:-}" \
+    LD_LIBRARY_PATH="/opt/hwloc_cuda/lib:/usr/local/lib:/usr/local/lib64:/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}" \
+    PATH="/usr/local/bin:/opt/hwloc_cuda/bin:/usr/local/cuda/bin:${PATH}"
 
 WORKDIR /app
 COPY --from=app-build /app/v6_test /app/bench ./
