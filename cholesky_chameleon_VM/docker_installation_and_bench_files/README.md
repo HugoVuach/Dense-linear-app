@@ -1,6 +1,4 @@
-# How to perform complete Cholesky benchmark?
-
-To run the benchmark files, take a look at the section **"How to run the Benchmark files?"** of the documentation.
+# How to perform complete Cholesky benchmark with Chameleon on your VM?
 
 This repo contains:
 
