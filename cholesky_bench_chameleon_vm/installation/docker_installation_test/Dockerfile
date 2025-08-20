@@ -22,10 +22,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-pip python3-dev \
     libxml2-dev libxslt1-dev \
     libnuma1 \
-    libpciaccess0 \
+    libpciaccess0 libpciaccess-dev \
     ninja-build ocl-icd-opencl-dev \
     ca-certificates gnupg2 lsb-release software-properties-common \
     openmpi-bin libopenmpi-dev \
+    libnvidia-ml-dev \
  && rm -rf /var/lib/apt/lists/*
 
 # OpenBLAS 
@@ -40,12 +41,14 @@ RUN wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86
     apt-get update && apt-get install -y --no-install-recommends cuda-toolkit-12-9 && \
     rm -rf /var/lib/apt/lists/*
 
-# hwloc avec support CUDA
+# hwloc (version 2.x stable) avec CUDA, NVML désactivé
 RUN set -eux; cd /tmp; \
-    git clone --depth 1 https://github.com/open-mpi/hwloc.git; \
+    git clone --branch hwloc-2.10.0 https://github.com/open-mpi/hwloc.git; \
     cd hwloc; ./autogen.sh; \
-    ./configure --enable-cuda --with-cuda=/usr/local/cuda --prefix=/opt/hwloc_cuda; \
+    export ac_cv_lib_nvidia_ml_nvmlInit=no; \
+    ./configure --enable-cuda --with-cuda=/usr/local/cuda --disable-nvml --prefix=/opt/hwloc_cuda; \
     make -j"$(nproc)"; make install; ldconfig; rm -rf /tmp/hwloc
+
 
 ENV PATH=/opt/hwloc_cuda/bin:$PATH \
     LD_LIBRARY_PATH=/opt/hwloc_cuda/lib:$LD_LIBRARY_PATH \
