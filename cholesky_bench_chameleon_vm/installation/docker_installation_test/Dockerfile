@@ -140,7 +140,7 @@ ENV CUDA_HOME="/usr/local/cuda" \
 
 WORKDIR /work
 CMD ["/bin/bash", "-lc", "echo 'CUDA:' && nvcc --version || true; echo 'MPI:' && mpicc --version | head -n1; echo 'StarPU:' && pkg-config --modversion starpu-1.4 || true; echo 'Chameleon:' && pkg-config --modversion chameleon || true"]
-
+ 
 
 # =============================================================================
 # Stage 3 — app-build - v6_test.c benchmark.c
