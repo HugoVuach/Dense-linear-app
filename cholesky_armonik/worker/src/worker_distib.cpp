@@ -29,7 +29,9 @@ extern "C" {
 #include <chameleon.h>   
 }
 
-
+// ============================================================================
+//  Fonctions utilitaires
+// ============================================================================
 
 // Lecture d'une variable d'environnement et conversion en entier positif.
 // defval, valeur par défaut à utiliser si la variable n'existe pas
@@ -108,7 +110,9 @@ static void create_desc_1block(CHAM_desc_t** desc, double* ptr, int B) {
   CHAMELEON_Desc_Create(desc, (void*)ptr, ChamRealDouble, mb, nb, bsiz, lm, ln, ioff, joff, m, n, p, q);
 }
 
-
+// ============================================================================
+//  Worker
+// ============================================================================
 
 class DagCholeskyWorker : public armonik::api::worker::ArmoniKWorker {
 public:
