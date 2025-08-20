@@ -49,8 +49,21 @@ The Dockerfile has 4 stages:
 
 ## Build the image
 
-### 1) Final “app” image (ready to run)
-
 ```bash
-docker build -t cholesky-bench --target app .
+docker build --target app-build -t cholesky_app_build .
+```
+
+
+## to run the benchmark
+# Create a folder to collect results if needed
+```bash
+mkdir -p results
+```
+
+# Run the benchmark harness
+```bash
+docker run --rm -it --gpus all \
+  -v "$(pwd)/results:/app/results" \
+  cholesky-bench \
+  /app/bench
 ```
