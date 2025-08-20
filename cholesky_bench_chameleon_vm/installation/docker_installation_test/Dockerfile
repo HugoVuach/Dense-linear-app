@@ -63,6 +63,7 @@ RUN set -eux; cd /tmp; \
         --enable-cuda --enable-opencl --enable-mpi \
         --with-cuda=/usr/local/cuda \
         --disable-build-doc \
+        --disable-python \
         --with-blas-lib="-lopenblas" \
         --with-blas-inc="/usr/local/include"; \
     make -j"$(nproc)"; make install; ldconfig; rm -rf /tmp/starpu
