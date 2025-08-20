@@ -246,6 +246,7 @@ int main() {
     logger.info("Wave k=" + std::to_string(k) + " done.");
   }
 
+  
   logger.info("All waves completed. L factor is in blk/i/j (i≥j).");
   return 0;
 }
