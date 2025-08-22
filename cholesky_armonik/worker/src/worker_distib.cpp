@@ -18,7 +18,7 @@
 #include <ctime>      
 #include <grpcpp/grpcpp.h>                 
 #include "grpcpp/support/sync_stream.h"    
-#include "objects.pb.h"                     
+#include "armonik/common/objects.pb.h"
 #include "utils/WorkerServer.h"             
 #include "Worker/ArmoniKWorker.h"          
 #include "Worker/ProcessStatus.h"           
