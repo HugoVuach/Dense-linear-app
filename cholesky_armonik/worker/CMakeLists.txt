@@ -71,3 +71,4 @@ target_link_options(DagCholeskyWorker PRIVATE
 
 # (Option) emplacement des libs ArmoniK si des .so/.a existent dans le prefix
 link_directories(${ARMONIKCPP_PREFIX}/lib)
+
