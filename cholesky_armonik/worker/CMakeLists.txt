@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.22)
+dedcmake_minimum_required(VERSION 3.22)
 project(armonik_cpp_cholesky VERSION 0.1 LANGUAGES C CXX)
 
 find_package(Threads)
