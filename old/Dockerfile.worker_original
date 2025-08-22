@@ -1,0 +1,101 @@
+c# =====================================================
+# Stage 0 : headers CUDA (build-time uniquement)
+# =====================================================
+FROM nvidia/cuda:12.9.0-devel-ubuntu24.04 AS cuda-devel
+
+# =====================================================
+# Stage 1 : Build du SDK ArmoniK + compilation du worker
+# =====================================================
+FROM chameleon-runtime:latest AS builder
+ENV DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC
+
+# Outils de build + gRPC/Protobuf (Ubuntu)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git cmake g++ make pkg-config \
+    autoconf automake libtool unzip curl wget \
+    libc-ares-dev \
+    protobuf-compiler protobuf-compiler-grpc libprotobuf-dev \
+    libgrpc++-dev \
+ && rm -rf /var/lib/apt/lists/*
+
+# Copie des headers/binaries CUDA (pour <cuda.h> requis par chameleon.h) — build-only
+COPY --from=cuda-devel /usr/local/cuda /usr/local/cuda
+ENV CUDA_HOME=/usr/local/cuda
+ENV PATH="/usr/local/cuda/bin:${PATH}"
+ENV LD_LIBRARY_PATH="/usr/local/cuda/lib64:${LD_LIBRARY_PATH}"
+ENV CPATH=/usr/local/cuda/include:${CPATH}
+
+
+# Dossier d’installation SDK ArmoniK
+RUN mkdir -p /worker/install/
+
+# Récupère le SDK ArmoniK (C++)
+RUN git clone --depth=1 https://github.com/aneoconsulting/ArmoniK.Api.git /armonik_api_temp
+WORKDIR /armonik_api_temp/packages/cpp
+RUN mkdir -p install build
+
+ENV CPATH=/usr/local/cuda/include:${CPATH}
+
+
+# Compile/installe le SDK ArmoniK C++
+WORKDIR /armonik_api_temp/packages/cpp/build
+RUN cmake -DCMAKE_BUILD_TYPE=Release \
+          -DPROTO_FILES_DIR=/armonik_api_temp/Protos/V1/ \
+          -DCMAKE_INSTALL_PREFIX=/armonik_api_temp/packages/cpp/install \
+          -DBUILD_TEST=OFF \
+          -DCPACK_GENERATOR=TGZ \
+          /armonik_api_temp/packages/cpp && \
+    make -j"$(nproc)" install
+
+# Installe le SDK dans /worker/install puis nettoie
+WORKDIR /
+RUN cp -a /armonik_api_temp/packages/cpp/install/. /worker/install/ && rm -rf /armonik_api_temp/
+
+# Variables pour linker/charger
+ENV LD_LIBRARY_PATH="/worker/install/lib:${LD_LIBRARY_PATH}"
+ENV PATH="/worker/install/bin:${PATH}"
+
+# Compile ton worker via CMake (même logique que l’exemple HelloWorld)
+WORKDIR /worker
+# ⚠️ Le build doit être lancé depuis le dossier contenant ce Dockerfile,
+# avec le sous-dossier ./src/ (ton worker .cpp) et le CMakeLists.txt à côté.
+COPY ./src/ /worker/src/
+COPY ./CMakeLists.txt /worker/
+
+RUN cmake -DCMAKE_INSTALL_PREFIX="/worker/install" /worker && \
+    make -j"$(nproc)" install
+
+
+# =====================================================
+# Stage 2 : Image finale runtime
+# =====================================================
+FROM chameleon-runtime:latest
+ENV DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC
+
+# Dépendances runtime gRPC/Protobuf/CAres (Ubuntu)
+# libprotobuf SONAME peut varier (32 ou 23) selon l’archive
+RUN apt-get update && \
+    (apt-get install -y --no-install-recommends libc-ares2 libgrpc++1 libprotobuf32 || \
+     apt-get install -y --no-install-recommends libc-ares2 libgrpc++1 libprotobuf23) && \
+    rm -rf /var/lib/apt/lists/*
+
+# Utilisateur non-root + /cache (sockets ArmoniK)
+RUN groupadd -g 5000 armonikuser && \
+    useradd -m -u 5000 -g 5000 -s /bin/bash armonikuser && \
+    mkdir -p /cache && chown -R armonikuser: /cache
+USER armonikuser
+
+# Copie le worker + SDK depuis le builder
+WORKDIR /
+COPY --from=builder /worker /worker
+
+# Ta conf : adapte le nom si ton fichier s’appelle "appsetting.json" (sans s)
+# Le pattern ArmoniK est plutôt "appsettings.json"
+COPY ./appsettings.json /appsettings.json
+
+# Env runtime
+ENV LD_LIBRARY_PATH="/worker/install/lib:${LD_LIBRARY_PATH}" \
+    PATH="/worker/install/bin:${PATH}"
+
+# Lancement du worker (nom = project() dans ton CMakeLists.txt)
+ENTRYPOINT ["/worker/install/bin/armonik_cpp_cholesky"]
