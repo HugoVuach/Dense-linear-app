@@ -48,10 +48,12 @@ add_compile_options(
   ${HWLOC_CFLAGS_LIST}
 )
 
-# Ton code worker (fichier que tu m'as donné)
+# Ton code worker 
+# remplace la ligne add_executable par :
 add_executable(DagCholeskyWorker
-  src/worker.cpp
+  src/worker_distib.cpp
 )
+
 
 # Link de base
 target_link_libraries(DagCholeskyWorker
