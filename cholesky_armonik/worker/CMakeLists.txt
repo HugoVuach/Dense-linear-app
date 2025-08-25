@@ -37,6 +37,8 @@ require_pkg(HWLOC    hwloc)
 
 # Include du SDK C++ ArmoniK (headers Worker/*, utils/*, exceptions/*, objects.pb.h…)
 include_directories(${ARMONIKCPP_PREFIX}/include)
+include_directories(${ARMONIKCPP_PREFIX}/include/armonik/common)  # objects.pb.h, exceptions
+include_directories(${ARMONIKCPP_PREFIX}/include/armonik/worker)  # WorkerServer.h + agent_common*.pb.h
 include_directories(${Protobuf_INCLUDE_DIRS})
 
 # Cflags cumulés (gRPC/Chameleon/StarPU/BLAS/hwloc)

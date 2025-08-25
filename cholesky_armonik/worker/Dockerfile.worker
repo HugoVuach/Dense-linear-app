@@ -116,6 +116,17 @@ RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/opt/a
     cmake --build build -j"$(nproc)" && \
     cmake --install build
 
+# Assure la présence des headers agent_common.* dans le prefix d'install
+RUN set -eux; \
+  mkdir -p /opt/armonik-cpp/include/armonik/worker; \
+  if [ -f /src/packages/cpp/build/ArmoniK.Api.Worker/agent_common.pb.h ]; then \
+    cp -v /src/packages/cpp/build/ArmoniK.Api.Worker/agent_common.pb.h /opt/armonik-cpp/include/armonik/worker/; \
+  fi; \
+  if [ -f /src/packages/cpp/build/ArmoniK.Api.Worker/agent_common.grpc.pb.h ]; then \
+    cp -v /src/packages/cpp/build/ArmoniK.Api.Worker/agent_common.grpc.pb.h /opt/armonik-cpp/include/armonik/worker/; \
+  fi
+
+
 # Résultat attendu :
 #  - Headers SDK C++ (Worker/..., utils/WorkerServer.h, exceptions/..., objects.pb.h, etc.) sous /opt/armonik-cpp/include
 #  - Libs nécessaires sous /opt/armonik-cpp/lib
