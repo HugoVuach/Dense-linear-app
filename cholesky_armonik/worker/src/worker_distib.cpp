@@ -28,9 +28,8 @@
 #include "armonik/worker/Worker/TaskHandler.h"
 
 
-extern "C" { 
 #include <chameleon.h>   
-}
+
 
 // ============================================================================
 //  Fonctions utilitaires
