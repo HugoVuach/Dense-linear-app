@@ -15,7 +15,12 @@
 #include <thread>     
 #include <cstring>   
 #include <cstdlib>    
-#include <ctime>      
+#include <ctime> 
+
+#include <fstream>
+#include <stdexcept>
+#include <iterator>
+
 #include <grpcpp/grpcpp.h>                 
 #include "grpcpp/support/sync_stream.h" 
 
@@ -96,10 +101,68 @@ static std::string serialize_block(const std::vector<double>& v) {
   return std::string(reinterpret_cast<const char*>(v.data()), v.size()*sizeof(double));
 }
 
-// télécharge et retourne le contenu d’un résultat identifié par resultId en appelant get_result(...).get() sur le TaskHandler
-static std::string download_blob(armonik::api::worker::TaskHandler& th, const std::string& resultId) {
-  return th.send_result(resultId).get();
+// télécharge et retourne le contenu d’un résultat identifié par resultId
+// static std::string download_blob(armonik::api::worker::TaskHandler& th, const std::string& resultId) {
+//  return th.get_result(resultId).get();
+// }
+// Nécessaire en tête de fichier
+#include <fstream>
+#include <stdexcept>
+#include <iterator>
+
+// Télécharge (en pratique : lit localement) le blob d'entrée.
+// - Cherche d’abord resultId dans les data-dependencies (clé -> chemin local).
+// - Si introuvable et que resultId vaut "payload" (ou est vide), renvoie le payload.
+// - Sinon lève une exception claire.
+static std::string download_blob(armonik::api::worker::TaskHandler& th,
+                                 const std::string& resultId)
+{
+  // 1) Essayer via les dépendances (fichiers déjà matérialisés par l’agent)
+  const auto& deps = th.getDataDependencies();
+
+  // résultat : chemin du fichier à lire
+  std::string path;
+
+  // a) clé exacte
+  if (auto it = deps.find(resultId); it != deps.end())
+    path = it->second;
+
+  // b) sinon, heuristique : parfois la valeur contient l’id dans le nom de fichier
+  if (path.empty()) {
+    for (const auto& kv : deps) {
+      if (kv.second.find(resultId) != std::string::npos) { // ex: .../<resultId>.bin
+        path = kv.second;
+        break;
+      }
+    }
+  }
+
+  // c) si on a trouvé un chemin, lire le fichier binaire
+  if (!path.empty()) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f)
+      throw std::runtime_error("Impossible d’ouvrir le fichier de dépendance : " + path +
+                               " (clé demandée : " + resultId + ")");
+    return std::string(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+  }
+
+  // 2) Fallback : payload comme entrée (convention pratique)
+  if (resultId.empty() || resultId == "payload") {
+    return th.getPayload(); // std::string déjà prêt
+  }
+
+  // 3) Rien trouvé -> message utile
+  std::string keys;
+  for (const auto& kv : deps) {
+    if (!keys.empty()) keys += ", ";
+    keys += kv.first;
+  }
+  throw std::runtime_error(
+    "Entrée '" + resultId + "' introuvable. Clés disponibles dans getDataDependencies(): [" + keys +
+    "]. Utilisez 'payload' si l’entrée est portée par le payload de la tâche."
+  );
 }
+
 
 // Cette fonction envoie (uploade) des données associées à un resultId via le TaskHandler, et attend la fin de l’opération avec .get()
 static void upload_blob(armonik::api::worker::TaskHandler& th, const std::string& resultId, const std::string& data) {
