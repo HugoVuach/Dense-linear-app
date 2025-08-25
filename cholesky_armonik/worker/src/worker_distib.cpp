@@ -98,7 +98,7 @@ static std::string serialize_block(const std::vector<double>& v) {
 
 // télécharge et retourne le contenu d’un résultat identifié par resultId en appelant get_result(...).get() sur le TaskHandler
 static std::string download_blob(armonik::api::worker::TaskHandler& th, const std::string& resultId) {
-  return th.get_result(resultId).get();
+  return th.send_result(resultId).get();
 }
 
 // Cette fonction envoie (uploade) des données associées à un resultId via le TaskHandler, et attend la fin de l’opération avec .get()
