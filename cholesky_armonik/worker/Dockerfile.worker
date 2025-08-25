@@ -146,10 +146,19 @@ COPY CMakeLists.txt ./
 COPY src/ ./src/
 # appsettings.json ira dans le runtime
 
-# Build binaire
-RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DARMONIKCPP_PREFIX=/opt/armonik-cpp && \
-    cmake --build build -j"$(nproc)" && \
-    strip build/DagCholeskyWorker || true
+# Build binaire qui bug
+#RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DARMONIKCPP_PREFIX=/opt/armonik-cpp && \
+ #   cmake --build build -j"$(nproc)" && \
+  #  strip build/DagCholeskyWorker || true
+
+# build binaire
+RUN cmake -S . -B build \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DARMONIKCPP_PREFIX=/opt/armonik-cpp \
+    -DCMAKE_RUNTIME_OUTPUT_DIRECTORY=/src/build \
+ && cmake --build build -j"$(nproc)" --target DagCholeskyWorker --verbose \
+ && (ls -lah /src/build || true) \
+ && (find /src/build -maxdepth 2 -type f -name DagCholeskyWorker -printf "EXE: %p\n")
 
 
 # -----------------------------------------------------------------------------
