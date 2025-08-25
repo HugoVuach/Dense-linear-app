@@ -3,20 +3,25 @@ project(DagCholeskyWorker CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-# Option : emplacement d'install du SDK C++ ArmoniK (donné par le stage sdk)
+# ------------------------------------------------------------------
+# 1. Préfixe du SDK ArmoniK (installé par le stage "sdk")
+# ------------------------------------------------------------------
 set(ARMONIKCPP_PREFIX "$ENV{ARMONIKCPP_PREFIX}" CACHE PATH "Prefix of ArmoniK C++ SDK install")
 if(NOT ARMONIKCPP_PREFIX)
   set(ARMONIKCPP_PREFIX "/opt/armonik-cpp")
 endif()
 
-# Protobuf / gRPC
+# ------------------------------------------------------------------
+# 2. Protobuf / Threads
+# ------------------------------------------------------------------
 find_package(Protobuf REQUIRED)
 find_package(Threads REQUIRED)
 
-# pkg-config requis pour récupérer grpc++ et libs Chameleon/StarPU/OpenBLAS/hwloc
+# ------------------------------------------------------------------
+# 3. pkg-config pour grpc++ / Chameleon / StarPU / OpenBLAS / hwloc
+# ------------------------------------------------------------------
 find_program(PKG_CONFIG_EXECUTABLE pkg-config REQUIRED)
 
-# Helper pour exiger une lib via pkg-config
 macro(require_pkg name module)
   execute_process(COMMAND ${PKG_CONFIG_EXECUTABLE} --exists ${module} RESULT_VARIABLE HAVE_${name})
   if(NOT HAVE_${name} EQUAL 0)
@@ -28,14 +33,15 @@ macro(require_pkg name module)
   separate_arguments(${name}_LIBS_LIST   NATIVE_COMMAND "${${name}_LIBS}")
 endmacro()
 
-# Libs nécessaires
 require_pkg(GRPCPP   grpc++)
 require_pkg(CHAM     chameleon)
 require_pkg(STARPU   starpu-1.4)
 require_pkg(OPENBLAS openblas)
 require_pkg(HWLOC    hwloc)
 
-# Include du SDK C++ ArmoniK (headers Worker/*, utils/*, exceptions/*, objects.pb.h…)
+# ------------------------------------------------------------------
+# 4. Headers du SDK ArmoniK + Protobuf
+# ------------------------------------------------------------------
 include_directories(${ARMONIKCPP_PREFIX}/include)
 include_directories(${ARMONIKCPP_PREFIX}/include/armonik/common)  # objects.pb.h, exceptions
 include_directories(${ARMONIKCPP_PREFIX}/include/armonik/worker)  # WorkerServer.h + agent_common*.pb.h
@@ -50,8 +56,57 @@ add_compile_options(
   ${HWLOC_CFLAGS_LIST}
 )
 
-# Ton code worker 
-# remplace la ligne add_executable par :
+# ------------------------------------------------------------------
+# 5. Trouver les bibliothèques du SDK ArmoniK
+#     (noms possibles selon build : ArmoniK.Api.* ou armonik_*)
+# ------------------------------------------------------------------
+link_directories(${ARMONIKCPP_PREFIX}/lib)
+
+function(find_armonik_lib OUT_VAR)
+  set(candidates ${ARGN})
+  foreach(name IN LISTS candidates)
+    find_library(_lib NAMES ${name} PATHS ${ARMONIKCPP_PREFIX}/lib NO_DEFAULT_PATH)
+    if(_lib)
+      set(${OUT_VAR} "${_lib}" PARENT_SCOPE)
+      return()
+    endif()
+  endforeach()
+  set(${OUT_VAR} "NOTFOUND" PARENT_SCOPE)
+endfunction()
+
+# Worker (TaskHandler, ArmoniKWorker, WorkerServer…)
+find_armonik_lib(ARMONIK_WORKER
+  ArmoniK.Api.Worker armonik_worker armonikapiworker ArmoniKWorker
+)
+# Common (utils::Configuration, exceptions, objects.pb.o…)
+find_armonik_lib(ARMONIK_COMMON
+  ArmoniK.Api.Common armonik_common armonikapicommon ArmoniKCommon
+)
+# Logger (Logger, writers/formatters)
+find_armonik_lib(ARMONIK_LOGGER
+  ArmoniK.Api.Logger armonik_logger armonikapilogger ArmoniKLogger
+)
+
+if(NOT ARMONIK_WORKER OR NOT EXISTS "${ARMONIK_WORKER}")
+  message(FATAL_ERROR
+    "Bibliothèque Worker du SDK introuvable dans ${ARMONIKCPP_PREFIX}/lib.\n"
+    "Contenu dispo :\n  ${ARMONIKCPP_PREFIX}/lib")
+endif()
+if(NOT ARMONIK_COMMON OR NOT EXISTS "${ARMONIK_COMMON}")
+  message(FATAL_ERROR "Bibliothèque Common du SDK introuvable dans ${ARMONIKCPP_PREFIX}/lib.")
+endif()
+if(NOT ARMONIK_LOGGER OR NOT EXISTS "${ARMONIK_LOGGER}")
+  message(FATAL_ERROR "Bibliothèque Logger du SDK introuvable dans ${ARMONIKCPP_PREFIX}/lib.")
+endif()
+
+message(STATUS "ArmoniK worker lib  : ${ARMONIK_WORKER}")
+message(STATUS "ArmoniK common lib  : ${ARMONIK_COMMON}")
+message(STATUS "ArmoniK logger lib  : ${ARMONIK_LOGGER}")
+
+
+# ------------------------------------------------------------------
+# 6. Exécutable
+# ------------------------------------------------------------------
 add_executable(DagCholeskyWorker
   src/worker_distib.cpp
 )
@@ -61,6 +116,13 @@ add_executable(DagCholeskyWorker
 target_link_libraries(DagCholeskyWorker
   ${Protobuf_LIBRARIES}
   Threads::Threads
+)
+
+# Ajouter les libs ArmoniK (doivent arriver avant/avec gRPC/protobuf)
+target_link_libraries(DagCholeskyWorker PRIVATE
+  ${ARMONIK_WORKER}
+  ${ARMONIK_COMMON}
+  ${ARMONIK_LOGGER}
 )
 
 # Ajout des libs via flags pkg-config (ordre conservé)
@@ -73,6 +135,12 @@ target_link_options(DagCholeskyWorker PRIVATE
   -ldl -lrt
 )
 
-# (Option) emplacement des libs ArmoniK si des .so/.a existent dans le prefix
-link_directories(${ARMONIKCPP_PREFIX}/lib)
+
+# ------------------------------------------------------------------
+# 7. RPATH pour retrouver les .so au runtime
+# ------------------------------------------------------------------
+set_target_properties(DagCholeskyWorker PROPERTIES
+  BUILD_RPATH   "${ARMONIKCPP_PREFIX}/lib"
+  INSTALL_RPATH "${ARMONIKCPP_PREFIX}/lib"
+)
 
