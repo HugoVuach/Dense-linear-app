@@ -20,11 +20,13 @@
 #include "grpcpp/support/sync_stream.h" 
 
 #include "armonik/common/objects.pb.h"
-#include "armonik/common/utils/WorkerServer.h"
-#include "armonik/common/worker/ArmoniKWorker.h"
-#include "armonik/common/worker/ProcessStatus.h"
-#include "armonik/common/worker/TaskHandler.h"
 #include "armonik/common/exceptions/ArmoniKApiException.h"
+
+#include "armonik/worker/utils/WorkerServer.h"
+#include "armonik/worker/Worker/ArmoniKWorker.h"
+#include "armonik/worker/Worker/ProcessStatus.h"
+#include "armonik/worker/Worker/TaskHandler.h"
+
 
 extern "C" { 
 #include <chameleon.h>   
