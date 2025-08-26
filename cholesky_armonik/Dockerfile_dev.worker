@@ -1,0 +1,214 @@
+# =============================================================================
+# worker-chameleon : ArmoniK C++ worker + Chameleon (CUDA+StarPU+OpenBLAS)
+# - Construit Chameleon & deps (OpenBLAS, hwloc CUDA, StarPU)
+# - Récupère et CONSTRUIT le SDK C++ ArmoniK depuis le repo officiel (en shared)
+# - Compile ton binaire worker (src/*.cpp) **sans CMake du projet**
+# - Assemble une image runtime GPU minimale
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Stage 1 — builder : toolchain Chameleon (OpenBLAS, CUDA headers, hwloc(CUDA), StarPU, Chameleon)
+# -----------------------------------------------------------------------------
+FROM ubuntu:24.04 AS builder
+ENV DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential cmake git pkg-config \
+    libhwloc-dev libnuma-dev libomp-dev \
+    libtool libtool-bin autoconf automake m4 \
+    gfortran curl wget unzip ca-certificates gnupg2 \
+    zlib1g-dev libffi-dev libssl-dev \
+    libevent-dev libudev-dev libcap-dev \
+    libx11-dev libxext-dev libxrender-dev libxtst-dev \
+    python3 python3-pip python3-dev \
+    libxml2-dev libxslt1-dev \
+    libnuma1 libpciaccess0 libpciaccess-dev \
+    ninja-build ocl-icd-opencl-dev \
+    openmpi-bin libopenmpi-dev \
+    libnvidia-ml-dev \
+ && rm -rf /var/lib/apt/lists/*
+
+# OpenBLAS
+RUN set -eux; cd /tmp; \
+    git clone --depth 1 --branch v0.3.26 https://github.com/xianyi/OpenBLAS.git; \
+    cd OpenBLAS; make USE_LAPACK=1 LAPACKE=1 -j"$(nproc)"; \
+    make install PREFIX=/usr/local; ldconfig; rm -rf /tmp/OpenBLAS
+
+# CUDA toolkit (headers + nvcc)
+RUN wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb && \
+    dpkg -i cuda-keyring_1.1-1_all.deb && rm -f cuda-keyring_1.1-1_all.deb && \
+    apt-get update && apt-get install -y --no-install-recommends cuda-toolkit-12-9 && \
+    rm -rf /var/lib/apt/lists/*
+
+# Rendre visibles les libs CUDA
+RUN printf "/usr/local/cuda/lib64\n/usr/local/lib\n" > /etc/ld.so.conf.d/cuda.conf && ldconfig
+
+# ENV build
+ENV CUDA_HOME="/usr/local/cuda" \
+    PATH="/usr/local/cuda/bin:/opt/hwloc_cuda/bin:${PATH}" \
+    LD_LIBRARY_PATH="/usr/local/cuda/lib64:/opt/hwloc_cuda/lib" \
+    PKG_CONFIG_PATH="/usr/local/cuda/lib64/pkgconfig:/opt/hwloc_cuda/lib/pkgconfig:/usr/local/lib/pkgconfig:/usr/local/share/pkgconfig"
+
+# hwloc (CUDA ON, NVML OFF)
+RUN set -eux; cd /tmp; \
+    git clone --branch hwloc-2.10.0 https://github.com/open-mpi/hwloc.git; \
+    cd hwloc; ./autogen.sh; \
+    export ac_cv_lib_nvidia_ml_nvmlInit=no; \
+    ./configure --enable-cuda --with-cuda=/usr/local/cuda --disable-nvml --prefix=/opt/hwloc_cuda; \
+    make -j"$(nproc)"; make install; ldconfig; rm -rf /tmp/hwloc
+
+# StarPU (CUDA/OpenCL/MPI), sans bindings Python
+RUN set -eux; cd /tmp; \
+  git clone --depth 1 --branch starpu-1.4 https://gitlab.inria.fr/starpu/starpu.git; \
+  cd starpu; ./autogen.sh; \
+  ./configure --prefix=/usr/local \
+      --with-hwloc=/opt/hwloc_cuda \
+      --enable-cuda --enable-opencl --enable-mpi \
+      --with-cuda=/usr/local/cuda \
+      --disable-build-doc --disable-python --without-python --disable-starpupy \
+      PYTHON=no \
+      --with-blas-lib="-lopenblas" --with-blas-inc="/usr/local/include"; \
+  make -j"$(nproc)"; make install; ldconfig; rm -rf /tmp/starpu
+
+# Chameleon (CUDA + StarPU + OpenBLAS)
+RUN set -eux; cd /tmp; \
+    git clone --depth 1 --recurse-submodules https://gitlab.inria.fr/solverstack/chameleon.git; \
+    cd chameleon; mkdir build && cd build; \
+    cmake .. \
+      -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local -DBUILD_SHARED_LIBS=ON \
+      -DCHAMELEON_ENABLE_CUDA=ON -DCHAMELEON_USE_CUDA=ON \
+      -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
+      -DCHAMELEON_ENABLE_MPI=ON -DCHAMELEON_ENABLE_OPENCL=ON \
+      -DCHAMELEON_SCHED_STARPU=ON -DCHAMELEON_SCHED_PARSEC=OFF -DCHAMELEON_SCHED_QUARK=OFF \
+      -DCHAMELEON_ENABLE_TESTING=OFF -DCHAMELEON_PREC_D=ON \
+      -DBLAS_LIBRARIES="/usr/local/lib/libopenblas.so" \
+      -DBLAS_INCLUDE_DIRS="/usr/local/include" \
+      -DLAPACKE_INCLUDE_DIR="/usr/local/include" \
+      -DLAPACKE_LIBRARY="/usr/local/lib/libopenblas.so" \
+      -DCBLAS_LIBRARY="/usr/local/lib/libopenblas.so" \
+      -DSTARPU_DIR=/usr/local -DHWLOC_ROOT=/opt/hwloc_cuda; \
+    make -j"$(nproc)"; make install; ldconfig; rm -rf /tmp/chameleon
+
+
+# -----------------------------------------------------------------------------
+# Stage 2 — sdk : récupère et CONSTRUIT le SDK C++ ArmoniK (en shared)
+# -----------------------------------------------------------------------------
+FROM ubuntu:24.04 AS sdk
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Outils de build + gRPC/Protobuf (pour générer et linker le SDK)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential cmake git pkg-config \
+    libgrpc++-dev protobuf-compiler-grpc protobuf-compiler libprotobuf-dev \
+    ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+# Récupération des sources ArmoniK.Api
+WORKDIR /src
+RUN git clone https://github.com/aneoconsulting/ArmoniK.Api.git .  --depth 1
+
+# Construire la partie C++ et installer sous /opt/armonik-cpp (libs partagées)
+WORKDIR /src/packages/cpp
+RUN cmake -S . -B build \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_INSTALL_PREFIX=/opt/armonik-cpp \
+      -DBUILD_SHARED_LIBS=ON && \
+    cmake --build build -j"$(nproc)" && \
+    cmake --install build
+
+# (optionnel) s’assurer de la présence de headers générés utiles
+RUN set -eux; \
+  mkdir -p /opt/armonik-cpp/include/armonik/worker; \
+  for f in agent_common.pb.h agent_common.grpc.pb.h; do \
+    if [ -f "/src/packages/cpp/build/ArmoniK.Api.Worker/$f" ]; then \
+      cp -v "/src/packages/cpp/build/ArmoniK.Api.Worker/$f" /opt/armonik-cpp/include/armonik/worker/; \
+    fi; \
+  done
+
+
+# -----------------------------------------------------------------------------
+# Stage 3 — worker-build : compile ton binaire contre Chameleon + SDK C++ (sans CMake du projet)
+# -----------------------------------------------------------------------------
+FROM builder AS worker-build
+
+# SDK C++ ArmoniK compilé (headers + .so)
+COPY --from=sdk /opt/armonik-cpp /opt/armonik-cpp
+
+# gRPC/Protobuf headers/libs & .pc (pour pkg-config)
+COPY --from=sdk /usr/include /usr/include
+COPY --from=sdk /usr/lib /usr/lib
+
+# ENV pour pkg-config et link
+ENV PKG_CONFIG_PATH="/opt/hwloc_cuda/lib/pkgconfig:/usr/local/lib/pkgconfig:/usr/local/share/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig" \
+    LD_LIBRARY_PATH="/opt/armonik-cpp/lib:/opt/armonik-cpp/lib64:/opt/hwloc_cuda/lib:/usr/local/lib:/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu" \
+    PATH="/usr/local/bin:/opt/hwloc_cuda/bin:/usr/local/cuda/bin:${PATH}" \
+    ARMONIKCPP_PREFIX="/opt/armonik-cpp"
+
+# Sources de TON worker (pas de CMake)
+WORKDIR /src
+COPY src/ ./src/
+# appsettings.json ira dans le runtime
+
+# Compilation manuelle -> DagCholeskyWorker
+RUN set -eux; \
+  mkdir -p build; \
+  CXXFLAGS="-O3 -DNDEBUG -std=gnu++17 -fPIE -Wall -Wextra -Wpedantic -DNOMINMAX -DCL_USE_DEPRECATED_OPENCL_1_1_APIS"; \
+  INCS="-I/opt/armonik-cpp/include -I/opt/armonik-cpp/include/armonik/common -I/opt/armonik-cpp/include/armonik/worker"; \
+  # CFLAGS/CXXFLAGS via pkg-config
+  PKGCF="$(pkg-config --cflags grpc++ protobuf starpu-1.4 hwloc libxml-2.0 || pkg-config --cflags grpc++ protobuf starpu-1.4 hwloc)"; \
+  # Compile tous les .cpp de src/
+  for f in $(find src -name '*.cpp'); do \
+    g++ $CXXFLAGS $INCS $PKGCF -isystem /usr/local/cuda/include -c "$f" -o "build/$(basename "$f" .cpp).o"; \
+  done; \
+  # Libs via pkg-config + libs Chameleon + ArmoniK
+  PKGLIBS="$(pkg-config --libs grpc++ protobuf starpu-1.4 hwloc libxml-2.0 || pkg-config --libs grpc++ protobuf starpu-1.4 hwloc)"; \
+  LIBS="$PKGLIBS -L/opt/armonik-cpp/lib -lArmoniK.Api.Worker -lArmoniK.Api.Common -L/usr/local/lib -lchameleon -lchameleon_starpu -lhqr -lcoreblas -lgpucublas -lopenblas -ldl -lrt -latomic"; \
+  g++ -o build/DagCholeskyWorker build/*.o $LIBS \
+      -Wl,-rpath,'$ORIGIN:/opt/armonik-cpp/lib:/opt/armonik-cpp/lib64:/usr/local/lib'; \
+  file build/DagCholeskyWorker; \
+  ldd build/DagCholeskyWorker || true; \
+  strip build/DagCholeskyWorker || true; \
+  (ls -lah build && find build -maxdepth 1 -type f -name DagCholeskyWorker -printf "EXE: %p\n")
+
+
+# -----------------------------------------------------------------------------
+# Stage 4 — runtime : image finale GPU minimale
+# -----------------------------------------------------------------------------
+FROM nvidia/cuda:12.9.0-runtime-ubuntu24.04 AS runtime
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libnuma1 libgomp1 libevent-2.1-7t64 libcap2 libudev1 \
+    libx11-6 libxext6 libxrender1 libxtst6 \
+    libxml2 ocl-icd-libopencl1 libgfortran5 libquadmath0 \
+    libpciaccess0 pkg-config ca-certificates \
+    # runtime gRPC/Protobuf
+    libgrpc++1 libprotobuf32 && \
+    rm -rf /var/lib/apt/lists/*
+
+# Libs runtime depuis le stage builder (OpenBLAS, StarPU, Chameleon, hwloc)
+COPY --from=builder /usr/local/ /usr/local/
+COPY --from=builder /opt/hwloc_cuda/ /opt/hwloc_cuda/
+
+# SDK C++ ArmoniK runtime (libs .so) + includes (utile pour debug)
+COPY --from=sdk /opt/armonik-cpp /opt/armonik-cpp
+
+# Binaire + appsettings
+WORKDIR /app
+COPY --from=worker-build /src/build/DagCholeskyWorker /app/DagCholeskyWorker
+COPY appsetting.json /app/appsetting.json
+
+# Répertoires et utilisateur non-root
+RUN mkdir -p /cache /data && \
+    useradd -m -u 10001 worker && chown -R worker:worker /app /cache /data
+USER worker
+
+# ENV runtime
+ENV CHAMELEON_DIR="/usr/local" \
+    STARPU_PREFIX="/usr/local" \
+    CUDA_HOME="/usr/local/cuda" \
+    LD_LIBRARY_PATH="/opt/armonik-cpp/lib:/opt/armonik-cpp/lib64:/opt/hwloc_cuda/lib:/usr/local/lib:/usr/local/lib64:/usr/local/cuda/lib64" \
+    PATH="/usr/local/bin:/opt/hwloc_cuda/bin:/usr/local/cuda/bin:${PATH}"
+
+# Lancer le worker
+CMD ["/app/DagCholeskyWorker"]

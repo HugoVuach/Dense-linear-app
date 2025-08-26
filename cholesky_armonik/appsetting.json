@@ -1,0 +1,9 @@
+{
+  "Grpc": {
+    "AgentEndpoint": "http://<host-ou-service-agent>:5001"
+  },
+  "Worker": {
+    "PartitionId": "default",
+    "PollingIntervalMs": 1000
+  }
+}
