@@ -29,10 +29,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && rm -rf /var/lib/apt/lists/*
 
 # OpenBLAS
-RUN set -eux; cd /tmp; \
-    git clone --depth 1 --branch v0.3.26 https://github.com/xianyi/OpenBLAS.git && \
-    cd OpenBLAS; make USE_LAPACK=1 LAPACKE=1 -j"$(nproc)"; \
-    make install PREFIX=/usr/local; ldconfig; rm -rf /tmp/OpenBLAS
+RUN cd /tmp && \
+    git clone --depth 1 --branch v0.3.26 https://github.com/OpenMathLib/OpenBLAS.git && \
+    cd OpenBLAS && \
+    make USE_LAPACK=1 LAPACKE=1 -j 4 && \
+    make install PREFIX=/install/openblas && \
+    ldconfig && \
+    rm -rf /tmp/OpenBLAS
 
 # CUDA toolkit (headers + nvcc pour compiler, les drivers viendront du nœud)
 RUN wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb && \
