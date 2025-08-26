@@ -30,7 +30,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # OpenBLAS
 RUN set -eux; cd /tmp; \
-    git clone --depth 1 --branch v0.3.26 https://github.com/xianyi/OpenBLAS.git; \
+    git clone --depth 1 --branch v0.3.26 https://github.com/xianyi/OpenBLAS.git && \
     cd OpenBLAS; make USE_LAPACK=1 LAPACKE=1 -j"$(nproc)"; \
     make install PREFIX=/usr/local; ldconfig; rm -rf /tmp/OpenBLAS
 
