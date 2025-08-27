@@ -112,7 +112,7 @@ int main() {
   const std::string part_hybrid = "cholesky-hybrid"
   const std::string default_partition = part_cpu;
 
-  logger.info("Partitions (allowed in session): cpu=" + part_cpu + ", gpu=" + part_gpu);
+  logger.info("Partitions (allowed in session): cpu=" + part_cpu + ", gpu=" + part_gpu + ", hybrid=" + part_hybrid + ", default=" + default_partition);
 
   taskOptions.mutable_max_duration()->set_seconds(3600); 
   taskOptions.set_max_retries(3);                        
@@ -130,14 +130,14 @@ int main() {
   ak_client::EventsClient   eventsClient(  ak_grpc::events::Events::NewStub(channel));
 
 
-  const int N  = 2048;                   
-  const int B  = 256;                   
+  const int N  = 10000;                   
+  const int B  = 448;                   
   const int Nb = (N + B - 1) / B;          
   logger.info("Problem: N=" + std::to_string(N) + " B=" + std::to_string(B) + " Nb=" + std::to_string(Nb));
 
 
   // Les partitions autorisées
-  std::string session_id = sessionsClient.create_session(taskOptions, {part_cpu, part_gpu});
+  std::string session_id = sessionsClient.create_session(taskOptions, {part_cpu, part_gpu, part_hybrid});
   logger.info("Session id = " + session_id);
 
   // Enregistrer les IDs de résultats pour tous les blocs (triangle inférieur)
