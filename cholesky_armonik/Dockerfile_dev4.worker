@@ -213,7 +213,7 @@ COPY --from=sdk /usr/lib/x86_64-linux-gnu/libprotoc*.so*   /usr/lib/x86_64-linux
 
 WORKDIR /app
 COPY --from=worker-build /src/build/DagCholeskyWorker /app/DagCholeskyWorker
-COPY --chmod=644 --chown=worker:worker appsettings.json /appsettings.json
+COPY appsettings.json /app/appsettings.json
 
 RUN mkdir -p /cache /data && \
     useradd -m -u 10001 worker && chown -R worker:worker /app /cache /data
