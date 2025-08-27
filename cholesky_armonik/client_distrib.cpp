@@ -29,14 +29,7 @@ namespace ak_client = armonik::api::client;
 namespace ak_grpc   = armonik::api::grpc::v1;
 
 
-// ============================================================================
-//  Fonctions utilitaires
-// ============================================================================
-
-
-// Fabrique un identifiant unique (chaîne) pour désigner un bloc de la matrice (i,j) du triangle inférieur
 // Convention : "blk/<i>/<j>"
-
 //        j=0    j=1    j=2
 // i=0  blk/0/0 blk/0/1 blk/0/2
 // i=1  blk/1/0 blk/1/1 blk/1/2
@@ -45,8 +38,7 @@ namespace ak_grpc   = armonik::api::grpc::v1;
 static std::string blk_id(int i, int j) {
   std::ostringstream oss; oss << "blk/" << i << "/" << j; return oss.str();
 }
-// // Construire les payloads textuels décrivant les tâches élémentaires du DAG de Cholesky, en respectant la convention blk/i/j pour les blocs.
-// Payload d'une tâche POTRF sur le bloc diagonal (k,k)
+// Payload POTRF
 static std::string make_payload_potrf(int k, int B) {
   std::ostringstream oss;
   oss << "op=POTRF k=" << k << " B=" << B
@@ -55,7 +47,7 @@ static std::string make_payload_potrf(int k, int B) {
   return oss.str();
 }
 
-// Payload TRSM pour le bloc (i,k) en utilisant Lkk (k,k)
+// Payload TRSM 
 static std::string make_payload_trsm(int i, int k, int B) {
   std::ostringstream oss;
   oss << "op=TRSM i=" << i << " k=" << k << " B=" << B
@@ -65,7 +57,7 @@ static std::string make_payload_trsm(int i, int k, int B) {
   return oss.str();
 }
 
-// Payload SYRK pour la mise à jour du bloc diagonal (i,i) avec Aik
+// Payload SYRK 
 static std::string make_payload_syrk(int i, int k, int B) {
   std::ostringstream oss;
   oss << "op=SYRK i=" << i << " k=" << k << " B=" << B
@@ -76,7 +68,7 @@ static std::string make_payload_syrk(int i, int k, int B) {
 }
 
 
-// Payload GEMM pour la mise à jour d'un bloc hors diagonale (i,j)
+// Payload GEMM 
 static std::string make_payload_gemm(int i, int j, int k, int B) {
   std::ostringstream oss;
   oss << "op=GEMM i=" << i << " j=" << j << " k=" << k << " B=" << B
@@ -87,7 +79,7 @@ static std::string make_payload_gemm(int i, int j, int k, int B) {
   return oss.str();
 }
 
-// Génère un bloc B×B aléatoire (POC) : utilisé pour injecter une matrice SPD-ish initiale
+// Génère un bloc B×B aléatoire (POC)
 static std::vector<double> gen_random_block(int B, double scale=1.0) {
   static std::mt19937_64 rng(42);            
   std::normal_distribution<double> dist(0.0, 1.0);
@@ -116,7 +108,8 @@ int main() {
   ak_grpc::TaskOptions taskOptions;
   
   const std::string part_cpu = "cholesky-cpu";
-  const std::string part_gpu = "cholesky-gpu"; // A adapter
+  const std::string part_gpu = "cholesky-gpu";
+  const std::string part_hybrid = "cholesky-hybrid"
   const std::string default_partition = part_cpu;
 
   logger.info("Partitions (allowed in session): cpu=" + part_cpu + ", gpu=" + part_gpu);
