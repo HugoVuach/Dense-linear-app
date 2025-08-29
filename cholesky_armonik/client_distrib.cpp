@@ -115,13 +115,16 @@ int main() {
 
   ak_grpc::TaskOptions taskOptions;
   
-const std::string part_cpu = "cholesky-cpu";
-const std::string part_gpu = "cholesky-gpu";
-const std::string part_hybrid = "cholesky-hybrid";
-const std::string default_partition = part_cpu;
+  const std::string part_cpu_vm = "cholesky-cpu-vm";
+  const std::string part_cpu_aws = "cholesky-cpu-aws";
+  const std::string part_gpu_vm = "cholesky-gpu-vm";
+  const std::string part_gpu_aws = "cholesky-gpu-aws";
+  const std::string part_hybrid_vm = "cholesky-hybrid-vm";
+  const std::string part_hybrid_aws = "cholesky-hybrid-aws";
+  const std::string default_partition = part_cpu_vm;
 
 
-logger.info("Partitions (allowed in session): cpu=" + part_cpu + ", gpu=" + part_gpu + ", hybrid=" + part_hybrid + ", default=" + default_partition);
+logger.info("Partitions (allowed in session): cpu-vm=" + part_cpu_vm + ",cpu-aws=" + part_cpu_aws + ", gpu-vm=" + part_gpu_vm + ", gpu-aws=" + part_gpu_aws + ", hybrid-vm=" + part_hybrid_vm + ", hybrid-aws=" + part_hybrid_aws + ", default=" + default_partition);
 
   taskOptions.mutable_max_duration()->set_seconds(3600); 
   taskOptions.set_max_retries(3);                        
@@ -145,29 +148,23 @@ logger.info("Partitions (allowed in session): cpu=" + part_cpu + ", gpu=" + part
   logger.info("Problem: N=" + std::to_string(N) + " B=" + std::to_string(B) + " Nb=" + std::to_string(Nb));
 
 
-// Création de session en autorisant nos partitions
-  std::string session_id = sessionsClient.create_session(taskOptions, {part_hybrid});
+  std::string session_id = sessionsClient.create_session(taskOptions, {part_cpu_vm, part_gpu_vm, part_hybrid_vm});
   logger.info("Session id = " + session_id);
 
-  // Enregistrer les IDs de résultats pour tous les blocs (triangle inférieur)
   std::vector<std::string> all_block_names; 
   all_block_names.reserve(Nb*Nb);
   for (int i=0;i<Nb;++i) 
     for (int j=0;j<=i;++j) 
       all_block_names.push_back(blk_name(i,j));
-  std::map<std::string,std::string> id_map = 
-      resultsClient.create_results_metadata(session_id, all_block_names);
+  std::map<std::string,std::string> id_map = resultsClient.create_results_metadata(session_id, all_block_names);
 
-    // POC : on génère une matrice : blocs aléatoires, diagonale renforcée.
   logger.info("Uploading initial blocks (lower triangle)...");
   for (int i=0;i<Nb;++i) {
     for (int j=0;j<=i;++j) {
       std::vector<double> block = gen_random_block(B, 0.1);
       if (i==j) {
-        // Renforce la diagonale pour rendre positive définie
         for (int d=0; d<B; ++d) block[d*B + d] += (double)B;
       }
-      // Upload du bloc sérialisé dans le ResultsStore
       resultsClient.upload_result_data(session_id,
                                        id_map[blk_id(i,j)],
                                        serialize_block(block));
@@ -181,23 +178,19 @@ logger.info("Partitions (allowed in session): cpu=" + part_cpu + ", gpu=" + part
                                  const std::vector<std::string>& out_ids,
                                  const std::string& partition_id)
   {
-    // 1) Créer et uploader le payload comme un Result
     auto meta = resultsClient.create_results_metadata(session_id, {payload_name});
     const std::string payload_id = meta[payload_name];
     resultsClient.upload_result_data(session_id, payload_id, payload_text);
 
-    // 2) Construire la TaskCreation + TaskOptions spécifiques à la tâche
     ak_common::TaskCreation tc;
     tc.set_payload_id(payload_id);
     for (const auto& rid : out_ids)*tc.add_expected_output_keys() = rid;
     for (const auto& rid : in_ids) *tc.add_data_dependencies()    = rid;
 
-    // Copier les options globales puis surcharger la partition pour cette tâche
     ak_grpc::TaskOptions per_task_opts = taskOptions;
     per_task_opts.set_partition_id(partition_id);
     *tc.mutable_task_options() = std::move(per_task_opts);
 
-    // 3) Soumettre
     tasksClient.submit_tasks(session_id, { tc });
   };
 
@@ -213,7 +206,7 @@ for (int k=0; k<Nb; ++k) {
   {
     const std::string pl = make_payload_potrf(id_kk, B);
     const std::string payload_name = "payload/potrf/" + std::to_string(k);
-    submit_partition(payload_name, pl, { id_kk }, { id_kk }, part_cpu);
+    submit_partition(payload_name, pl, { id_kk }, { id_kk }, part_cpu_vm);
     eventsClient.wait_for_result_availability(session_id, { id_kk });
   }
 
@@ -224,7 +217,7 @@ for (int k=0; k<Nb; ++k) {
     const std::string id_ik = id_map[blk_name(i,k)];
     const std::string pl = make_payload_trsm(id_kk, id_ik, B);
     const std::string payload_name = "payload/trsm/" + std::to_string(i) + "/" + std::to_string(k);
-    submit_partition(payload_name, pl, { id_ik }, { id_kk, id_ik }, part_cpu);
+    submit_partition(payload_name, pl, { id_ik }, { id_kk, id_ik }, part_cpu_vm);
     trsm_out_ids.push_back(id_ik);
   }
   if (!trsm_out_ids.empty())
@@ -232,7 +225,7 @@ for (int k=0; k<Nb; ++k) {
 
 
   // 3) MAJ(i,j,k) : SYRK (diag) / GEMM (hors-diag) — GPU si dispo
-  const std::string part_for_update = part_gpu.empty() ? part_cpu : part_gpu;
+  const std::string part_for_update = part_gpu.empty() ? part_cpu_vm : part_gpu_vm;
   std::vector<std::string> upd_out_ids;
   for (int i=k+1; i<Nb; ++i) {
     const std::string id_ik = id_map[blk_name(i,k)];
