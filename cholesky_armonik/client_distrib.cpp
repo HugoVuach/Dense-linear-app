@@ -116,15 +116,16 @@ int main() {
   ak_grpc::TaskOptions taskOptions;
   
   const std::string part_cpu_vm = "cholesky-cpu-vm";
-  const std::string part_cpu_aws = "cholesky-cpu-aws";
-  const std::string part_gpu_vm = "cholesky-gpu-vm";
-  const std::string part_gpu_aws = "cholesky-gpu-aws";
-  const std::string part_hybrid_vm = "cholesky-hybrid-vm";
-  const std::string part_hybrid_aws = "cholesky-hybrid-aws";
-  const std::string default_partition = part_cpu_vm;
+  //const std::string part_cpu_aws = "cholesky-cpu-aws";
+  //const std::string part_gpu_vm = "cholesky-gpu-vm";
+  //const std::string part_gpu_aws = "cholesky-gpu-aws";
+  //const std::string part_hybrid_vm = "cholesky-hybrid-vm";
+  //const std::string part_hybrid_aws = "cholesky-hybrid-aws";
+  //const std::string default_partition = part_cpu_vm;
 
 
-logger.info("Partitions (allowed in session): cpu-vm=" + part_cpu_vm + ",cpu-aws=" + part_cpu_aws + ", gpu-vm=" + part_gpu_vm + ", gpu-aws=" + part_gpu_aws + ", hybrid-vm=" + part_hybrid_vm + ", hybrid-aws=" + part_hybrid_aws + ", default=" + default_partition);
+  logger.info("Partitions (allowed in session): cpu-vm=" + part_cpu_vm);
+  // logger.info("Partitions (allowed in session): cpu-vm=" + part_cpu_vm + ",cpu-aws=" + part_cpu_aws + ", gpu-vm=" + part_gpu_vm + ", gpu-aws=" + part_gpu_aws + ", hybrid-vm=" + part_hybrid_vm + ", hybrid-aws=" + part_hybrid_aws + ","default=" + default_partition);
 
   taskOptions.mutable_max_duration()->set_seconds(3600); 
   taskOptions.set_max_retries(3);                        
@@ -142,13 +143,13 @@ logger.info("Partitions (allowed in session): cpu-vm=" + part_cpu_vm + ",cpu-aws
   ak_client::EventsClient   eventsClient(  ak_grpc::events::Events::NewStub(channel));
 
 
-  const int N  = 10000;                   
+  const int N  = 3000;                   
   const int B  = 448;                   
   const int Nb = (N + B - 1) / B;          
   logger.info("Problem: N=" + std::to_string(N) + " B=" + std::to_string(B) + " Nb=" + std::to_string(Nb));
 
 
-  std::string session_id = sessionsClient.create_session(taskOptions, {part_cpu_vm, part_gpu_vm, part_hybrid_vm});
+  std::string session_id = sessionsClient.create_session(taskOptions, {part_cpu_vm});
   logger.info("Session id = " + session_id);
 
   std::vector<std::string> all_block_names; 
@@ -225,7 +226,9 @@ for (int k=0; k<Nb; ++k) {
 
 
   // 3) MAJ(i,j,k) : SYRK (diag) / GEMM (hors-diag) — GPU si dispo
-  const std::string part_for_update = part_gpu.empty() ? part_cpu_vm : part_gpu_vm;
+  const std::string part_for_update = part_cpu_vm 
+  //const std::string part_for_update = part_gpu.empty() ? part_cpu_vm : part_gpu_vm;
+  // const std::string part_for_update = part_gpu.empty() ? part_cpu_vm : part_gpu_vm;
   std::vector<std::string> upd_out_ids;
   for (int i=k+1; i<Nb; ++i) {
     const std::string id_ik = id_map[blk_name(i,k)];
