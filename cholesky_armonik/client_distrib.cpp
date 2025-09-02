@@ -225,7 +225,7 @@ for (int k=0; k<Nb; ++k) {
     eventsClient.wait_for_result_availability(session_id, trsm_out_ids);
 
 
-  // 3) MAJ(i,j,k) : SYRK (diag) / GEMM (hors-diag) — GPU si dispo
+  // 3) MAJ(i,j,k) : SYRK (diag) / GEMM (hors-diag) — GPU ou CPU
   const std::string part_for_update = part_cpu_vm 
   //const std::string part_for_update = part_gpu.empty() ? part_cpu_vm : part_gpu_vm;
   // const std::string part_for_update = part_gpu.empty() ? part_cpu_vm : part_gpu_vm;
