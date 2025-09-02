@@ -170,42 +170,68 @@ RUN set -eux; \
 FROM nvidia/cuda:12.9.0-runtime-ubuntu24.04 AS runtime
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Paquets strictement nécessaires au RUN (pas d’outils de build, pas de pkg-config, pas de headers)
+# Installer seulement les paquets dont on a vu les .so dans `ldd`
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libnuma1 libgomp1 libevent-2.1-7t64 libcap2 libudev1 \
-    libxml2 ocl-icd-libopencl1 libgfortran5 libquadmath0 \
-    libpciaccess0 ca-certificates \
+    libnuma1 \
+    libgomp1 \
+    libgfortran5 \
+    libquadmath0 \
+    libcap2 \
+    libudev1 \
+    libpciaccess0 \
+    libxml2 \
+    zlib1g \
+    libssl3 \
+    libcrypto3 \
  && rm -rf /var/lib/apt/lists/*
 
-# --- Copier UNIQUEMENT les .so nécessaires depuis le builder/sdks ---
+# --- Copie des dépendances runtime exactes ---
 
-# Libs runtime construites dans /usr/local du builder (OpenBLAS, StarPU, Chameleon)
-# -> uniquement les .so (pas d'headers/cmake/pkg-config)
-COPY --from=builder /usr/local/lib/*.so* /usr/local/lib/
-# (si StarPU installe des plugins/scheds dynamiques)
-COPY --from=builder /usr/local/lib/starpu/ /usr/local/lib/starpu/
+# SDK ArmoniK
+COPY --from=sdk /opt/armonik-cpp/lib/libArmoniK.Api.Common.so.3 /opt/armonik-cpp/lib/
+COPY --from=sdk /opt/armonik-cpp/lib/libArmoniK.Api.Worker.so.3 /opt/armonik-cpp/lib/
 
-# hwloc CUDA (uniquement les .so)
-COPY --from=builder /opt/hwloc_cuda/lib/ /opt/hwloc_cuda/lib/
+# hwloc CUDA
+COPY --from=builder /opt/hwloc_cuda/lib/libhwloc.so.15 /opt/hwloc_cuda/lib/
 
-# SDK C++ ArmoniK (uniquement les .so)
-COPY --from=sdk /opt/armonik-cpp /opt/armonik-cpp
+# Libs Chameleon/StarPU/OpenBLAS
+COPY --from=builder /usr/local/lib/libchameleon.so.1 /usr/local/lib/
+COPY --from=builder /usr/local/lib/libchameleon_starpu.so.1 /usr/local/lib/
+COPY --from=builder /usr/local/lib/libcoreblas.so.1 /usr/local/lib/
+COPY --from=builder /usr/local/lib/libgpucublas.so.1 /usr/local/lib/
+COPY --from=builder /usr/local/lib/libhqr.so.0.1.0 /usr/local/lib/
+COPY --from=builder /usr/local/lib/libopenblas.so.0 /usr/local/lib/
+COPY --from=builder /usr/local/lib/libstarpu-1.4.so.7 /usr/local/lib/
 
-# gRPC/absl/etc. requis au runtime — SANS libprotoc
-COPY --from=sdk /usr/lib/x86_64-linux-gnu/libgrpc++*.so* /usr/lib/x86_64-linux-gnu/
-COPY --from=sdk /usr/lib/x86_64-linux-gnu/libgrpc*.so*   /usr/lib/x86_64-linux-gnu/
-COPY --from=sdk /usr/lib/x86_64-linux-gnu/libabsl*.so*   /usr/lib/x86_64-linux-gnu/
-COPY --from=sdk /usr/lib/x86_64-linux-gnu/libre2*.so*    /usr/lib/x86_64-linux-gnu/
-COPY --from=sdk /usr/lib/x86_64-linux-gnu/libupb*.so*    /usr/lib/x86_64-linux-gnu/
-COPY --from=sdk /usr/lib/x86_64-linux-gnu/libgpr*.so*    /usr/lib/x86_64-linux-gnu/
-COPY --from=sdk /usr/lib/x86_64-linux-gnu/libcares*.so*  /usr/lib/x86_64-linux-gnu/
-COPY --from=sdk /usr/lib/x86_64-linux-gnu/libssl.so*     /usr/lib/x86_64-linux-gnu/
-COPY --from=sdk /usr/lib/x86_64-linux-gnu/libcrypto.so*  /usr/lib/x86_64-linux-gnu/
-COPY --from=sdk /usr/lib/x86_64-linux-gnu/libz.so*       /usr/lib/x86_64-linux-gnu/
-COPY --from=sdk /usr/lib/x86_64-linux-gnu/libaddress_sorting.so* /usr/lib/x86_64-linux-gnu/
-COPY --from=sdk /usr/lib/x86_64-linux-gnu/libprotobuf*.so* /usr/lib/x86_64-linux-gnu/
-# (pas de libprotoc*.so dans le runtime)
+# Libs gRPC / protobuf / re2 / upb / absl (seulement celles vues dans ldd)
+COPY --from=sdk /usr/lib/x86_64-linux-gnu/libgrpc++.so.1.51 /usr/lib/x86_64-linux-gnu/
+COPY --from=sdk /usr/lib/x86_64-linux-gnu/libgrpc.so.29 /usr/lib/x86_64-linux-gnu/
+COPY --from=sdk /usr/lib/x86_64-linux-gnu/libgpr.so.29 /usr/lib/x86_64-linux-gnu/
+COPY --from=sdk /usr/lib/x86_64-linux-gnu/libprotobuf.so.32 /usr/lib/x86_64-linux-gnu/
+COPY --from=sdk /usr/lib/x86_64-linux-gnu/libre2.so.10 /usr/lib/x86_64-linux-gnu/
+COPY --from=sdk /usr/lib/x86_64-linux-gnu/libupb.so.29 /usr/lib/x86_64-linux-gnu/
+COPY --from=sdk /usr/lib/x86_64-linux-gnu/libcares.so.2 /usr/lib/x86_64-linux-gnu/
+COPY --from=sdk /usr/lib/x86_64-linux-gnu/libaddress_sorting.so.29 /usr/lib/x86_64-linux-gnu/
+COPY --from=sdk /usr/lib/x86_64-linux-gnu/libssl.so.3 /usr/lib/x86_64-linux-gnu/
+COPY --from=sdk /usr/lib/x86_64-linux-gnu/libcrypto.so.3 /usr/lib/x86_64-linux-gnu/
+COPY --from=sdk /usr/lib/x86_64-linux-gnu/libz.so.1 /usr/lib/x86_64-linux-gnu/
+# ICU et LZMA (traînés par gRPC/protobuf)
+COPY --from=sdk /usr/lib/x86_64-linux-gnu/libicudata.so.74 /usr/lib/x86_64-linux-gnu/
+COPY --from=sdk /usr/lib/x86_64-linux-gnu/libicuuc.so.74 /usr/lib/x86_64-linux-gnu/
+COPY --from=sdk /usr/lib/x86_64-linux-gnu/liblzma.so.5 /usr/lib/x86_64-linux-gnu/
+# Tous les absl vus dans ldd
+COPY --from=sdk /usr/lib/x86_64-linux-gnu/libabsl_*.so.20220623 /usr/lib/x86_64-linux-gnu/
 
+# CUDA libs utilisées
+COPY --from=builder /usr/local/cuda/lib64/libcublas.so.12 /usr/local/cuda/lib64/
+COPY --from=builder /usr/local/cuda/lib64/libcublasLt.so.12 /usr/local/cuda/lib64/
+COPY --from=builder /usr/local/cuda/lib64/libcudart.so.12 /usr/local/cuda/lib64/
+COPY --from=builder /usr/local/cuda/lib64/libcusolver.so.11 /usr/local/cuda/lib64/
+COPY --from=builder /usr/local/cuda/lib64/libcusparse.so.12 /usr/local/cuda/lib64/
+COPY --from=builder /usr/local/cuda/lib64/libnvJitLink.so.12 /usr/local/cuda/lib64/
+COPY --from=builder /usr/local/cuda/lib64/libOpenCL.so.1 /usr/local/cuda/lib64/
+
+# --- Application ---
 WORKDIR /app
 COPY --from=worker-build /src/build/DagCholeskyWorker /app/DagCholeskyWorker
 COPY --chmod=644 --chown=worker:worker appsettings.json /appsettings.json
@@ -217,7 +243,7 @@ USER worker
 ENV CHAMELEON_DIR="/usr/local" \
     STARPU_PREFIX="/usr/local" \
     CUDA_HOME="/usr/local/cuda" \
-    LD_LIBRARY_PATH="/opt/armonik-cpp/lib:/opt/armonik-cpp/lib64:/opt/hwloc_cuda/lib:/usr/local/lib:/usr/local/lib64:/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}" \
+    LD_LIBRARY_PATH="/opt/armonik-cpp/lib:/opt/hwloc_cuda/lib:/usr/local/lib:/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}" \
     PATH="/usr/local/bin:/opt/hwloc_cuda/bin:/usr/local/cuda/bin:${PATH}"
 
 CMD ["/app/DagCholeskyWorker"]
