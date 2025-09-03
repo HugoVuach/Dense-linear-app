@@ -17,6 +17,12 @@ Exemples d’usage :
   python generate_dataset.py --universe etf --outdir dataset_us
   python generate_dataset.py --universe sectors --tickers AAPL,MSFT,NVDA,AMZN   # override manuel
 
+
+  python generate_dataset.py --universe etf --start 2015-01-01
+python generate_dataset.py --universe indices --start 2000-01-01
+python generate_dataset.py --universe bluechips --start 2010-01-01
+python generate_dataset.py --universe sector --start 2012-01-01
+
 Dépendances :
   pip install yfinance pandas numpy
 """
@@ -50,7 +56,7 @@ DEFAULT_UNIVERSES: Dict[str, List[str]] = {
         "^VIX",    # Volatility Index
     ],
     # Blue chips (leaders liquides)
-    "bluechips": [
+    "l": [
         "AAPL", "MSFT", "AMZN", "GOOGL", "META",
         "NVDA", "TSLA", "JPM", "JNJ", "XOM",
         "BRK-B",  # Berkshire (Yahoo utilise BRK-B)

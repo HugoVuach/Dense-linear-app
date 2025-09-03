@@ -31,6 +31,7 @@ class ChartFeature(object):
         else:
             return numpy.r_[xs[-n:], numpy.full(-n, numpy.nan)]
 
+    # j'ai pas 
     def moving_extract(self, window=30, open_prices=None, close_prices=None, high_prices=None, low_prices=None,
                        volumes=None, with_label=True, flatten=True):
         self.extract(open_prices=open_prices, close_prices=close_prices, high_prices=high_prices, low_prices=low_prices,
@@ -64,7 +65,7 @@ class ChartFeature(object):
                 moving_features.append(numpy.nan_to_num(x))
                 p += 1
             return moving_features
-
+    
     def extract(self, open_prices=None, close_prices=None, high_prices=None, low_prices=None, volumes=None):
         self.feature = []
         for feature_type in self.selector:
@@ -76,7 +77,7 @@ class ChartFeature(object):
                 print("feature type not supported: %s" % feature_type)
         self.feature_distribution()
         return self.feature
-
+    #
     def feature_distribution(self):
         k = 0
         for feature_column in self.feature:
