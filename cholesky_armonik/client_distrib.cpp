@@ -130,7 +130,7 @@ int main() {
   taskOptions.mutable_max_duration()->set_seconds(3600); 
   taskOptions.set_max_retries(3);                        
   taskOptions.set_priority(1);                           
-  taskOptions.set_partition_id(default_partition);       
+  taskOptions.set_partition_id(part_cpu_vm);       
 
   taskOptions.set_application_name("cholesky-dag");         
   taskOptions.set_application_version("1.0");            
@@ -156,7 +156,7 @@ int main() {
   all_block_names.reserve(Nb*Nb);
   for (int i=0;i<Nb;++i) 
     for (int j=0;j<=i;++j) 
-      all_block_names.push_back(blk_name(i,j));
+      all_block_names.push_back(blk_id(i,j));
   std::map<std::string,std::string> id_map = resultsClient.create_results_metadata(session_id, all_block_names);
 
   logger.info("Uploading initial blocks (lower triangle)...");
@@ -177,13 +177,14 @@ int main() {
   auto submit_partition = [&](const std::string& payload_name,
                                  const std::string& payload_text,
                                  const std::vector<std::string>& out_ids,
+                                  const std::vector<std::string>& in_ids,
                                  const std::string& partition_id)
   {
     auto meta = resultsClient.create_results_metadata(session_id, {payload_name});
     const std::string payload_id = meta[payload_name];
     resultsClient.upload_result_data(session_id, payload_id, payload_text);
 
-    ak_common::TaskCreation tc;
+    ak_grpc::TaskCreation tc;
     tc.set_payload_id(payload_id);
     for (const auto& rid : out_ids)*tc.add_expected_output_keys() = rid;
     for (const auto& rid : in_ids) *tc.add_data_dependencies()    = rid;
@@ -200,7 +201,7 @@ for (int k=0; k<Nb; ++k) {
   logger.info("Wave k=" + std::to_string(k));
 
 
-  const std::string id_kk = id_map[blk_name(k,k)];
+  const std::string id_kk = id_map[blk_id(k,k)];
 
 
   // 1) POTRF(k,k) sur CPU
@@ -215,7 +216,7 @@ for (int k=0; k<Nb; ++k) {
   // 2) TRSM(i,k) pour i>k sur CPU
   std::vector<std::string> trsm_out_ids;
   for (int i=k+1; i<Nb; ++i) {
-    const std::string id_ik = id_map[blk_name(i,k)];
+    const std::string id_ik = id_map[blk_id(i,k)];
     const std::string pl = make_payload_trsm(id_kk, id_ik, B);
     const std::string payload_name = "payload/trsm/" + std::to_string(i) + "/" + std::to_string(k);
     submit_partition(payload_name, pl, { id_ik }, { id_kk, id_ik }, part_cpu_vm);
@@ -226,22 +227,22 @@ for (int k=0; k<Nb; ++k) {
 
 
   // 3) MAJ(i,j,k) : SYRK (diag) / GEMM (hors-diag) — GPU ou CPU
-  const std::string part_for_update = part_cpu_vm 
+  const std::string part_for_update = part_cpu_vm;
   //const std::string part_for_update = part_gpu.empty() ? part_cpu_vm : part_gpu_vm;
   // const std::string part_for_update = part_gpu.empty() ? part_cpu_vm : part_gpu_vm;
   std::vector<std::string> upd_out_ids;
   for (int i=k+1; i<Nb; ++i) {
-    const std::string id_ik = id_map[blk_name(i,k)];
+    const std::string id_ik = id_map[blk_id(i,k)];
     for (int j=k+1; j<=i; ++j) {
       if (i == j) {
-        const std::string id_ii = id_map[blk_name(i,i)];
+        const std::string id_ii = id_map[blk_id(i,i)];
         const std::string pl = make_payload_syrk(id_ii, id_ik, B);
         const std::string payload_name = std::string("payload/syrk/") + std::to_string(i) + "/" + std::to_string(k);
         submit_partition(payload_name, pl, { id_ii }, { id_ii, id_ik }, part_for_update);
         upd_out_ids.push_back(id_ii);
       } else {
-        const std::string id_ij = id_map[blk_name(i,j)];
-        const std::string id_jk = id_map[blk_name(j,k)];
+        const std::string id_ij = id_map[blk_id(i,j)];
+        const std::string id_jk = id_map[blk_id(j,k)];
         const std::string pl = make_payload_gemm(id_ij, id_ik, id_jk, B);
         const std::string payload_name = std::string("payload/gemm/") + std::to_string(i) + "/" + std::to_string(j) + "/" + std::to_string(k);
         submit_partition(payload_name, pl, { id_ij }, { id_ij, id_ik, id_jk }, part_for_update);
