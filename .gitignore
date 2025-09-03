@@ -1,0 +1,3 @@
+echo ".venv/" >> .gitignore
+echo "*/.venv/" >> .gitignore
+echo "*.pyc" >> .gitignore
