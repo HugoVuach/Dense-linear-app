@@ -1,0 +1,99 @@
+# ========= STAGE 1: builder =========
+FROM alpine:3.18.6 AS builder
+
+# Outils de build + gRPC/Protobuf + TLS + certs
+RUN apk update && apk add --no-cache \
+    git \
+    gcc \
+    g++ \
+    build-base \
+    autoconf \
+    automake \
+    libtool \
+    curl \
+    c-ares \
+    c-ares-dev \
+    make \
+    cmake \
+    unzip \
+    linux-headers \
+    protobuf \
+    protobuf-dev \
+    grpc \
+    grpc-dev \
+    openssl \
+    openssl-dev \
+    ca-certificates
+
+# Répertoire d'installation partagé (SDK + client)
+RUN mkdir -p /client/install/
+
+# ---- Récupérer et construire le SDK C++ ArmoniK ----
+ARG ARMONIK_API_REPO=https://github.com/aneoconsulting/ArmoniK.Api.git
+# Optionnel: fige un commit/tag pour reproductibilité (ex: v1.0.0)
+ARG ARMONIK_API_REF=main
+
+RUN git clone --depth 1 --branch ${ARMONIK_API_REF} ${ARMONIK_API_REPO} /armonik_api_temp/
+WORKDIR /armonik_api_temp/packages/cpp/
+
+RUN mkdir -p build install
+WORKDIR /armonik_api_temp/packages/cpp/build
+
+# Build SDK en Release et installe dans /armonik_api_temp/packages/cpp/install
+RUN cmake \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DPROTO_FILES_DIR=/armonik_api_temp/Protos/V1/ \
+    -DCMAKE_INSTALL_PREFIX=/armonik_api_temp/packages/cpp/install/ \
+    -DBUILD_TEST=OFF \
+    -DCPACK_GENERATOR=TGZ \
+    /armonik_api_temp/packages/cpp \
+ && cmake --build . -j $(nproc) --target install
+
+# Copie le SDK installé pour le client
+WORKDIR /
+RUN cp -a /armonik_api_temp/packages/cpp/install/. /client/install/ \
+ && rm -rf /armonik_api_temp/
+
+# ---- Construire TON client ----
+# Copie d’abord les fichiers “stables” pour mieux utiliser le cache
+COPY ./client/CMakeLists.txt /client/CMakeLists.txt
+# Puis la source
+COPY ./client/src/ /client/src/
+
+# Construire et installer en Release, avec un RPATH vers /client/install/lib
+RUN cmake -S /client -B /build \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_PREFIX_PATH="/client/install" \
+      -DCMAKE_INSTALL_PREFIX="/client/install" \
+      -DCMAKE_INSTALL_RPATH="/client/install/lib" \
+ && cmake --build /build -j $(nproc) --target install \
+ && strip /client/install/bin/client_distrib || true
+
+# ========= STAGE 2: runtime =========
+FROM alpine:3.18.6
+
+# Libs runtime minimales
+RUN apk add --no-cache \
+    libstdc++ \
+    grpc \
+    protobuf \
+    c-ares \
+    openssl \
+    ca-certificates
+
+# Utilisateur non-root
+RUN addgroup -g 5000 -S armonikuser \
+ && adduser -D -h /home/armonikuser -u 5000 -G armonikuser --shell /bin/sh armonikuser \
+ && mkdir /cache && chown armonikuser: /cache
+USER armonikuser
+
+# Binaire + libs du client
+COPY --from=builder /client/install /client/install
+# Config (tu peux aussi la monter)
+COPY ./appsettings.json /appsettings.json
+
+# Si tu n'utilises pas l’RPATH, dé-commente:
+# ENV LD_LIBRARY_PATH="/client/install/lib:$LD_LIBRARY_PATH"
+ENV PATH="/client/install/bin:$PATH"
+
+ENTRYPOINT ["/client/install/bin/client_distrib"]
