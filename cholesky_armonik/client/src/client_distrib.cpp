@@ -13,8 +13,8 @@
 #include <random>                   
 #include <algorithm>  
 
-#include "armonik/common/objects.pb.h"
-#include "armonik/common/utils/Configuration.h"
+#include "objects.pb.h"
+#include "utils/Configuration.h"
 #include "logger/logger.h"             
 #include "logger/writer.h"              
 #include "logger/formatter.h"           
@@ -173,28 +173,33 @@ int main() {
   }
   logger.info("Initial blocks uploaded.");
 
-  //  Soumettre une tâche dans une partition donnée --------------------
-  auto submit_partition = [&](const std::string& payload_name,
-                                 const std::string& payload_text,
-                                 const std::vector<std::string>& out_ids,
-                                  const std::vector<std::string>& in_ids,
-                                 const std::string& partition_id)
-  {
-    auto meta = resultsClient.create_results_metadata(session_id, {payload_name});
-    const std::string payload_id = meta[payload_name];
-    resultsClient.upload_result_data(session_id, payload_id, payload_text);
+auto submit_partition = [&](const std::string& payload_name,
+                            const std::string& payload_text,
+                            const std::vector<std::string>& out_ids,
+                            const std::vector<std::string>& in_ids,
+                            const std::string& partition_id)
+{
+  auto meta = resultsClient.create_results_metadata(session_id, {payload_name});
+  const std::string payload_id = meta[payload_name];
+  resultsClient.upload_result_data(session_id, payload_id, payload_text);
 
-    ak_grpc::TaskCreation tc;
-    tc.set_payload_id(payload_id);
-    for (const auto& rid : out_ids)*tc.add_expected_output_keys() = rid;
-    for (const auto& rid : in_ids) *tc.add_data_dependencies()    = rid;
+  ak_common::TaskCreation tc;
+  tc.payload_id           = payload_id;
+  tc.expected_output_keys = out_ids;  // ou .push_back(...) si tu préfères en boucle
+  tc.data_dependencies    = in_ids;
 
-    ak_grpc::TaskOptions per_task_opts = taskOptions;
-    per_task_opts.set_partition_id(partition_id);
-    *tc.mutable_task_options() = std::move(per_task_opts);
+  ak_grpc::TaskOptions per_task_opts = taskOptions;
+  per_task_opts.set_partition_id(partition_id);
 
-    tasksClient.submit_tasks(session_id, { tc });
-  };
+  std::vector<ak_common::TaskCreation> tcs;
+  tcs.push_back(std::move(tc));
+
+  // Nouvelle signature : (session_id, vector<TaskCreation>, TaskOptions)
+  tasksClient.submit_tasks(session_id, tcs, per_task_opts);
+};
+
+
+
 
   // -------------------- Exécution par vagues (k = 0..Nb-1) --------------------
 for (int k=0; k<Nb; ++k) {
