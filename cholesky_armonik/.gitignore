@@ -1,6 +1,8 @@
 CMakeCache.txt
 armonik_api/
-
+# Virtualenvs Python
+.venv/
+venv/
 CMakeLists.txt.user
 CMakeCache.txt
 CMakeFiles
