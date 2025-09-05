@@ -84,3 +84,7 @@ def load_raw_data_dict(file_map: Dict[str, str], sep: str = "\t") -> Dict[str, L
     Prêt à être passé à align_and_merge(raw_data_dict=...).
     """
     return {sym: read_rawdata_tsv(path, sep=sep) for sym, path in file_map.items()}
+
+def read_sample_data(path: str):
+    """Compatibilité : ancien nom utilisé par feature.py."""
+    return read_rawdata_tsv(path, sep="\t")

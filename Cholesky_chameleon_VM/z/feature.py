@@ -1,28 +1,32 @@
-# feature.py — Cross-Asset Joint Forecasting
-# ---------------------------------------------------------------
-# - Lit tous les fichiers du dossier dataset/ (ou un sous-ensemble via --universe)
-# - Aligne les dates (union) avec forward-fill et 0 au démarrage
-# - Extrait des features TA-Lib par actif via ChartFeature.extract(...)
-# - Concatène les blocs de features par actif : F_total = sum(F_actif)
-# - Fenêtre glissante : X windows de shape (F_total, T_window) pour le dump
-# - Labels multi-cibles : y ∈ R^{N_windows × M} (un rendement futur par actif)
-# - Standardisation par actif (sur les fenêtres d’entraînement uniquement)
-# - Sauvegarde 2 objets pickle (train_set, test_set) dans 'ultimate_feature'
-#
-# Sorties (par map pickle) :
-#   {
-#     "code": "PANEL",
-#     "feature": np.ndarray (N,F_total,T_window),   # dump au format [N,F,T]
-#     "label":   np.ndarray (N,M),                  # multi-target
-#     "assets":  [ticker_1, ..., ticker_M],
-#     "meta":    {...}
-#   }
+"""
+feature.py — Cross-Asset Joint Forecasting (panel multi-actifs)
+---------------------------------------------------------------
+- Parcourt un dossier de TSV/CSV OHLCV (date, open, high, close, low, volume)
+- Union des dates, alignement par forward-fill (zéros avant 1ère obs si voulu)
+- Extraction des features par actif via chart.ChartFeature (TA-Lib)
+- Concaténation des blocs de features par actif => (F_total, T)
+- Construction de fenêtres glissantes -> X: (N, F_total, window), y: (N, M)
+- Standardisation par actif (z-score) calculée sur X_train uniquement
+- Sérialisation en 2 pickles consécutifs (train_map puis test_map), format
+  attendu par gossip.read_feature (qui transpose ensuite en [N, T, F])
+
+Usage :
+    python feature.py \
+        --dataset_dir ./dataset \
+        --window 30 \
+        --prospective 1 \
+        --days_for_test 700 \
+        --selector "ROCP,OROCP,HROCP,LROCP,MACD,RSI,VROCP,BOLL,MA,VMA,PRICE_VOLUME,CROSS_PRICE" \
+        --out ultimate_feature
+"""
 
 import os
 import argparse
 import pickle
 import numpy as np
 from collections import defaultdict
+from typing import Dict, List, Tuple
+
 
 from rawdata import read_sample_data   # lit un TSV "\t" -> List[RawData] (date, open, high, close, low, volume)
 from chart import ChartFeature         # on réutilise l’ingénierie de features unitaire
@@ -30,6 +34,18 @@ from chart import ChartFeature         # on réutilise l’ingénierie de featur
 # --------------------
 # Utilitaires internes
 # --------------------
+
+REQUIRED_COLS = {"date", "open", "high", "close", "low", "volume"}
+
+def has_ohlcv_header(path: str, sep: str = "\t") -> bool:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            header = f.readline().strip().lower().split(sep)
+        cols = {c.strip() for c in header}
+        return REQUIRED_COLS.issubset(cols)
+    except Exception:
+        return False
+
 
 def make_label_from_prices(prices_slice: np.ndarray) -> float:
     """

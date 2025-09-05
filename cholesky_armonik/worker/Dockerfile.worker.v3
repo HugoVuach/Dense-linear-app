@@ -1,12 +1,4 @@
-# =============================================================================
-# worker-chameleon : ArmoniK C++ worker + Chameleon (CUDA+StarPU+OpenBLAS)
-# - Build complet côté builder/sdks
-# - Runtime GPU MINIMAL (seules les .so requises, pas de headers/outils)
-# =============================================================================
 
-# -----------------------------------------------------------------------------
-# Stage 1 — builder : toolchain Chameleon (OpenBLAS, CUDA headers, hwloc(CUDA), StarPU, Chameleon)
-# -----------------------------------------------------------------------------
 FROM ubuntu:24.04 AS builder
 ENV DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC
 
@@ -26,19 +18,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libnvidia-ml-dev \
  && rm -rf /var/lib/apt/lists/*
 
-# OpenBLAS
 RUN set -eux; cd /tmp; \
     git clone --depth 1 --branch v0.3.26 https://github.com/xianyi/OpenBLAS.git; \
     cd OpenBLAS; make USE_LAPACK=1 LAPACKE=1 -j"$(nproc)"; \
     make install PREFIX=/usr/local; ldconfig; rm -rf /tmp/OpenBLAS
 
-# CUDA toolkit (headers + nvcc) — présent UNIQUEMENT dans le builder
 RUN wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb && \
     dpkg -i cuda-keyring_1.1-1_all.deb && rm -f cuda-keyring_1.1-1_all.deb && \
     apt-get update && apt-get install -y --no-install-recommends cuda-toolkit-12-9 && \
     rm -rf /var/lib/apt/lists/*
 
-# Rendre visibles les libs CUDA
 RUN printf "/usr/local/cuda/lib64\n/usr/local/lib\n" > /etc/ld.so.conf.d/cuda.conf && ldconfig
 
 ENV CUDA_HOME="/usr/local/cuda" \
@@ -46,7 +35,6 @@ ENV CUDA_HOME="/usr/local/cuda" \
     LD_LIBRARY_PATH="/usr/local/cuda/lib64:/opt/hwloc_cuda/lib" \
     PKG_CONFIG_PATH="/usr/local/cuda/lib64/pkgconfig:/opt/hwloc_cuda/lib/pkgconfig:/usr/local/lib/pkgconfig:/usr/local/share/pkgconfig"
 
-# hwloc (CUDA ON, NVML OFF)
 RUN set -eux; cd /tmp; \
     git clone --branch hwloc-2.10.0 https://github.com/open-mpi/hwloc.git; \
     cd hwloc; ./autogen.sh; \
@@ -54,7 +42,6 @@ RUN set -eux; cd /tmp; \
     ./configure --enable-cuda --with-cuda=/usr/local/cuda --disable-nvml --prefix=/opt/hwloc_cuda; \
     make -j"$(nproc)"; make install; ldconfig; rm -rf /tmp/hwloc
 
-# StarPU (CUDA/OpenCL/MPI), sans bindings Python
 RUN set -eux; cd /tmp; \
   git clone --depth 1 --branch starpu-1.4 https://gitlab.inria.fr/starpu/starpu.git; \
   cd starpu; ./autogen.sh; \
@@ -67,7 +54,6 @@ RUN set -eux; cd /tmp; \
       --with-blas-lib="-lopenblas" --with-blas-inc="/usr/local/include"; \
   make -j"$(nproc)"; make install; ldconfig; rm -rf /tmp/starpu
 
-# Chameleon (CUDA + StarPU + OpenBLAS)
 RUN set -eux; cd /tmp; \
     git clone --depth 1 --recurse-submodules https://gitlab.inria.fr/solverstack/chameleon.git; \
     cd chameleon; mkdir build && cd build; \
@@ -86,14 +72,11 @@ RUN set -eux; cd /tmp; \
       -DSTARPU_DIR=/usr/local -DHWLOC_ROOT=/opt/hwloc_cuda; \
     make -j"$(nproc)"; make install; ldconfig; rm -rf /tmp/chameleon
 
-# Minification des .so (strip) côté builder AVANT copie vers runtime
 RUN set -eux; \
   find /usr/local/lib -type f -name "*.so*" -exec strip --strip-unneeded {} + || true; \
   find /opt/hwloc_cuda/lib -type f -name "*.so*" -exec strip --strip-unneeded {} + || true
 
-# -----------------------------------------------------------------------------
-# Stage 2 — sdk : récupère eGBt CONSTRUIT le SDK C++ ArmoniK (en shared)
-# -----------------------------------------------------------------------------
+
 FROM ubuntu:24.04 AS sdk
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -114,7 +97,6 @@ RUN cmake -S . -B build \
     cmake --build build -j"$(nproc)" && \
     cmake --install build
 
-# (optionnel) headers générés utiles (uniquement pour le build stage)
 RUN set -eux; \
   mkdir -p /opt/armonik-cpp/include/armonik/worker; \
   for f in agent_common.pb.h agent_common.grpc.pb.h; do \
@@ -123,19 +105,12 @@ RUN set -eux; \
     fi; \
   done
 
-# Strip des libs du SDK pour le runtime
 RUN set -eux; \
   find /opt/armonik-cpp -type f -name "*.so*" -exec strip --strip-unneeded {} + || true
 
-# -----------------------------------------------------------------------------
-# Stage 3 — worker-build : compile le binaire (contre Chameleon + SDK C++)
-# -----------------------------------------------------------------------------
+
 FROM builder AS worker-build
-
-# SDK C++ ArmoniK (headers + .so) pour le build uniquement
 COPY --from=sdk /opt/armonik-cpp /opt/armonik-cpp
-
-# gRPC/Protobuf headers/libs & .pc (pour pkg-config) — BUILD ONLY
 COPY --from=sdk /usr/include /usr/include
 COPY --from=sdk /usr/lib /usr/lib
 
@@ -164,13 +139,11 @@ RUN set -eux; \
   strip build/DagCholeskyWorker || true; \
   (ls -lah build && find build -maxdepth 1 -type f -name DagCholeskyWorker -printf "EXE: %p\n")
 
-# -----------------------------------------------------------------------------
-# Stage 4 — runtime : image finale GPU minimale
-# -----------------------------------------------------------------------------
+
+
 FROM nvidia/cuda:12.9.0-runtime-ubuntu24.04 AS runtime
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Installer seulement les paquets dont on a vu les .so dans `ldd`
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libnuma1 \
     libgomp1 \
@@ -184,16 +157,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl3 \
  && rm -rf /var/lib/apt/lists/*
 
-# --- Copie des dépendances runtime exactes ---
 
-# SDK ArmoniK
 COPY --from=sdk /opt/armonik-cpp/lib/libArmoniK.Api.Common.so.3 /opt/armonik-cpp/lib/
 COPY --from=sdk /opt/armonik-cpp/lib/libArmoniK.Api.Worker.so.3 /opt/armonik-cpp/lib/
-
-# hwloc CUDA
 COPY --from=builder /opt/hwloc_cuda/lib/libhwloc.so.15 /opt/hwloc_cuda/lib/
-
-# Libs Chameleon/StarPU/OpenBLAS
 COPY --from=builder /usr/local/lib/libchameleon.so.1 /usr/local/lib/
 COPY --from=builder /usr/local/lib/libchameleon_starpu.so.1 /usr/local/lib/
 COPY --from=builder /usr/local/lib/libcoreblas.so.1 /usr/local/lib/
@@ -201,8 +168,6 @@ COPY --from=builder /usr/local/lib/libgpucublas.so.1 /usr/local/lib/
 COPY --from=builder /usr/local/lib/libhqr.so.0.1.0 /usr/local/lib/
 COPY --from=builder /usr/local/lib/libopenblas.so.0 /usr/local/lib/
 COPY --from=builder /usr/local/lib/libstarpu-1.4.so.7 /usr/local/lib/
-
-# Libs gRPC / protobuf / re2 / upb / absl (seulement celles vues dans ldd)
 COPY --from=sdk /usr/lib/x86_64-linux-gnu/libgrpc++.so.1.51 /usr/lib/x86_64-linux-gnu/
 COPY --from=sdk /usr/lib/x86_64-linux-gnu/libgrpc.so.29 /usr/lib/x86_64-linux-gnu/
 COPY --from=sdk /usr/lib/x86_64-linux-gnu/libgpr.so.29 /usr/lib/x86_64-linux-gnu/
@@ -214,15 +179,11 @@ COPY --from=sdk /usr/lib/x86_64-linux-gnu/libaddress_sorting.so.29 /usr/lib/x86_
 #COPY --from=sdk /usr/lib/x86_64-linux-gnu/libssl.so.3 /usr/lib/x86_64-linux-gnu/
 #COPY --from=sdk /usr/lib/x86_64-linux-gnu/libcrypto.so.3 /usr/lib/x86_64-linux-gnu/
 #COPY --from=sdk /usr/lib/x86_64-linux-gnu/libz.so.1 /usr/lib/x86_64-linux-gnu/
-
-# ICU et LZMA (traînés par gRPC/protobuf)
 #COPY --from=sdk /usr/lib/x86_64-linux-gnu/libicudata.so.74 /usr/lib/x86_64-linux-gnu/
 #COPY --from=sdk /usr/lib/x86_64-linux-gnu/libicuuc.so.74 /usr/lib/x86_64-linux-gnu/
 #COPY --from=sdk /usr/lib/x86_64-linux-gnu/liblzma.so.5 /usr/lib/x86_64-linux-gnu/
 # Tous les absl vus dans ldd
 COPY --from=sdk /usr/lib/x86_64-linux-gnu/libabsl_*.so.20220623 /usr/lib/x86_64-linux-gnu/
-
-# CUDA libs utilisées
 #COPY --from=builder /usr/local/cuda/lib64/libcublas.so.12 /usr/local/cuda/lib64/
 #COPY --from=builder /usr/local/cuda/lib64/libcublasLt.so.12 /usr/local/cuda/lib64/
 #COPY --from=builder /usr/local/cuda/lib64/libcudart.so.12 /usr/local/cuda/lib64/
@@ -231,7 +192,7 @@ COPY --from=sdk /usr/lib/x86_64-linux-gnu/libabsl_*.so.20220623 /usr/lib/x86_64-
 #COPY --from=builder /usr/local/cuda/lib64/libnvJitLink.so.12 /usr/local/cuda/lib64/
 #COPY --from=builder /usr/local/cuda/lib64/libOpenCL.so.1 /usr/local/cuda/lib64/
 
-# --- Application ---
+
 WORKDIR /app
 COPY --from=worker-build /src/build/DagCholeskyWorker /app/DagCholeskyWorker
 COPY --chmod=644 --chown=worker:worker appsettings.json /appsettings.json
