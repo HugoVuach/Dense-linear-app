@@ -144,6 +144,16 @@ RUN set -eux; \
 FROM nvidia/cuda:12.9.0-runtime-ubuntu24.04 AS runtime
 ENV DEBIAN_FRONTEND=noninteractive
 
+
+# Creating armonik user with the correct permissions
+#RUN addgroup -g 5000 -S armonikuser && adduser -D -h /home/armonikuser -u 5000 -G armonikuser --shell /bin/sh armonikuser && mkdir /cache && chown armonikuser: /cache
+RUN groupadd --gid 5000 armonikuser \
+ && useradd --uid 5000 --gid 5000 --create-home --home-dir /home/armonikuser --shell /bin/sh armonikuser \
+ && mkdir -p /cache \
+ && chown -R 5000:5000 /cache /home/armonikuser
+
+
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libnuma1 \
     libgomp1 \
@@ -192,16 +202,22 @@ COPY --from=sdk /usr/lib/x86_64-linux-gnu/libabsl_*.so.20220623 /usr/lib/x86_64-
 #COPY --from=builder /usr/local/cuda/lib64/libnvJitLink.so.12 /usr/local/cuda/lib64/
 #COPY --from=builder /usr/local/cuda/lib64/libOpenCL.so.1 /usr/local/cuda/lib64/
 
-
 WORKDIR /app
-COPY --from=worker-build /src/build/DagCholeskyWorker /app/DagCholeskyWorker
-COPY --chmod=644 --chown=worker:worker appsettings.json /appsettings.json
 
-RUN mkdir -p /cache /data && \
-    useradd -m -u 10001 worker && chown -R worker:worker /app /cache /data
-USER worker
+# COPY --from=worker-build /src/build/DagCholeskyWorker /app/DagCholeskyWorker
+COPY --from=worker-build --chown=5000:5000 /src/build/DagCholeskyWorker /app/DagCholeskyWorker
+# COPY --chmod=644 --chown=armonikuser:armonikuser appsettings.json /appsettings.json
+COPY --chmod=644 --chown=5000:5000 appsettings.json /appsettings.json
 
-ENV CHAMELEON_DIR="/usr/local" \
+RUN mkdir -p /home/armonikuser/.starpu/sampling /home/armonikuser/.cache \
+ && chown -R 5000:5000 /home/armonikuser/.starpu /home/armonikuser/.cache
+
+# USER armonikuser
+
+USER 5000:5000
+ENV HOME=/home/armonikuser \
+    XDG_CACHE_HOME=/home/armonikuser/.cache \ 
+    CHAMELEON_DIR="/usr/local" \
     STARPU_PREFIX="/usr/local" \
     CUDA_HOME="/usr/local/cuda" \
     LD_LIBRARY_PATH="/opt/armonik-cpp/lib:/opt/hwloc_cuda/lib:/usr/local/lib:/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}" \

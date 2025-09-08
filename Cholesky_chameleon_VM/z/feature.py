@@ -47,101 +47,154 @@ def has_ohlcv_header(path: str, sep: str = "\t") -> bool:
         return False
 
 
-def make_label_from_prices(prices_slice: np.ndarray) -> float:
+# ---------------------------------------------------------------------
+# Labels multi-cibles (mimique ChartFeature.make_label sur fenêtre future)
+# ---------------------------------------------------------------------
+def make_future_label_from_close(
+    close: np.ndarray, start_idx: int, window: int, prospective: int
+) -> float:
     """
-    Reproduit ChartFeature.make_label :
-    - base = prices_slice[0]
-    - rendement(s) futur(s) pondéré(s) (ratio=0.5, decay=0.9), moyenne normalisée
+    Reproduit la logique d'origine :
+    label sur segment close[start : start+prospective] avec
+    base = close[start] (qui est le dernier point *dans* la fenêtre).
     """
+    left = start_idx + window - 1
+    right = left + prospective  # inclus
+    seg = close[left : right + 1]  # [left, ..., right], longueur prospective+1
+    if seg.size <= 1:
+        return 0.0
+
     ratio = 0.5
     decay = 0.9
     label = 0.0
-    for i in range(1, len(prices_slice)):
-        label += (prices_slice[i] / prices_slice[0] - 1.0) * ratio
+    base = seg[0]
+    for i in range(1, seg.size):
+        label += (seg[i] / base - 1.0) * ratio
         ratio *= decay
-    return label / max(1, (len(prices_slice) - 1))
+    return label / (seg.size - 1)
 
 
-def forward_fill_align(all_dates, series_by_date, start_zero=True):
+
+# ---------------------------------------------------------------------
+# Alignement : union des dates + forward-fill ; zéros avant 1re obs
+# ---------------------------------------------------------------------
+def forward_fill_align(
+    all_dates: List[str],
+    series: Dict[str, Tuple[float, float, float, float, float]],
+    start_zero: bool = True) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:    
     """
-    Aligne une série OHLCV sur all_dates (triées croissant).
-    - series_by_date: dict(date -> (o,h,c,l,v))
-    - forward-fill des trous ; si start_zero=True, initialise à 0 jusqu'à la 1ère valeur connue.
+    series : dict(date -> (open, high, close, low, volume))
+    Retourne 5 vecteurs numpy alignés sur all_dates (longueur T).
+    - forward-fill après 1ère observation
+    - avant 1ère observation :
+        * start_zero=True  -> 0.0
+        * start_zero=False -> valeur de la 1ère observation (backfill)
     """
-    O, H, C, L, V = [], [], [], [], []
+    T = len(all_dates)
+    O = np.full(T, np.nan, dtype=np.float64)
+    H = np.full(T, np.nan, dtype=np.float64)
+    C = np.full(T, np.nan, dtype=np.float64)
+    L = np.full(T, np.nan, dtype=np.float64)
+    V = np.full(T, np.nan, dtype=np.float64)
+
     last = None
-    for d in all_dates:
-        if d in series_by_date:
-            last = series_by_date[d]
-        if last is None:
-            if start_zero:
-                O.append(0.0); H.append(0.0); C.append(0.0); L.append(0.0); V.append(0.0)
-            else:
-                O.append(np.nan); H.append(np.nan); C.append(np.nan); L.append(np.nan); V.append(np.nan)
+    first_seen_idx = None
+
+    for t, d in enumerate(all_dates):
+        if d in series:
+            last = series[d]
+            if first_seen_idx is None:
+                first_seen_idx = t
+        if last is not None:
+            O[t], H[t], C[t], L[t], V[t] = last
+
+    # Avant la 1re observation
+    if first_seen_idx is not None and first_seen_idx > 0:
+        if start_zero:
+            O[:first_seen_idx] = 0.0
+            H[:first_seen_idx] = 0.0
+            C[:first_seen_idx] = 0.0
+            L[:first_seen_idx] = 0.0
+            V[:first_seen_idx] = 0.0
         else:
-            o, h, c, l, v = last
-            O.append(o); H.append(h); C.append(c); L.append(l); V.append(v)
-    return (np.asarray(O, dtype=np.float64),
-            np.asarray(H, dtype=np.float64),
-            np.asarray(C, dtype=np.float64),
-            np.asarray(L, dtype=np.float64),
-            np.asarray(V, dtype=np.float64))
+            o0, h0, c0, l0, v0 = series[all_dates[first_seen_idx]]
+            O[:first_seen_idx] = o0
+            H[:first_seen_idx] = h0
+            C[:first_seen_idx] = c0
+            L[:first_seen_idx] = l0
+            V[:first_seen_idx] = v0
+
+    # Si aucune donnée : remplis zéro (rare, mais protège le pipeline)
+    if first_seen_idx is None:
+        O[:] = H[:] = C[:] = L[:] = V[:] = 0.0
+
+    # Remplace résidus NaN (bords) par 0
+    O = np.nan_to_num(O)
+    H = np.nan_to_num(H)
+    C = np.nan_to_num(C)
+    L = np.nan_to_num(L)
+    V = np.nan_to_num(V)
+
+    return O, H, C, L, V
 
 
-def build_windows_block(features_concat_FxT, closes_concat_list, window, prospective):
+def build_windows_block(
+    features_concat: np.ndarray,           # (F_total, T)
+    closes_by_asset: List[np.ndarray],     # M arrays (T,)
+    window: int,
+    prospective: int) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Construit des fenêtres X (liste de blocs [F_total, window]) et labels Y (liste de vecteurs longueur M).
-    - features_concat_FxT : np.ndarray (F_total, T)
-    - closes_concat_list  : list[np.ndarray(T,)] — un close par actif (dans le même ordre que les blocs)
-    - returns: X_windows (N, F_total, window), Y_targets (N, M)
+    Slide sur t = 0..T - window - prospective
+    X[t] = features[:, t : t+window]        -> (F_total, window)
+    y[t] = [label_m(t) for m in 1..M]       -> (M,)
+    Retour : X_all (N, F_total, window), Y_all (N, M)
     """
-    F_total, T = features_concat_FxT.shape
-    M = len(closes_concat_list)
-    # Nombre de fenêtres valides si le label regarde 'prospective' pas dans le futur
-    N = max(0, T - window - prospective + 1)
-    X_list, Y_list = [], []
+    F_total, T = features_concat.shape
+    M = len(closes_by_asset)
+    last_start = T - window - prospective
+    if last_start < 0:
+        # pas assez de données pour 1 fenêtre
+        return np.zeros((0, F_total, window), dtype=np.float32), np.zeros((0, M), dtype=np.float32)
 
-    for p in range(N):
-        # slice temporel
-        x = features_concat_FxT[:, p:p + window]           # (F_total, window)
-        # labels multi-actifs
-        y_vec = []
-        t0 = p + window - 1
-        # label basé sur close[t0 : t0+prospective]
-        for c in closes_concat_list:
-            y_val = make_label_from_prices(c[t0:t0 + prospective + 1])
-            y_vec.append(y_val)
-        X_list.append(x)
-        Y_list.append(y_vec)
+    X = np.empty((last_start + 1, F_total, window), dtype=np.float32)
+    Y = np.empty((last_start + 1, M), dtype=np.float32)
 
-    X = np.asarray(X_list, dtype=np.float32)   # (N, F_total, window)
-    Y = np.asarray(Y_list, dtype=np.float32)   # (N, M)
+    for t in range(last_start + 1):
+        X[t] = features_concat[:, t : t + window]
+        for m in range(M):
+            Y[t, m] = make_future_label_from_close(closes_by_asset[m], t, window, prospective)
+
     return X, Y
 
 
-def zscore_by_asset_block(X_train, X_test, asset_feat_slices, eps=1e-8):
+# ---------------------------------------------------------------------
+# Standardisation par actif (z-score), calculée sur TRAIN uniquement
+# ---------------------------------------------------------------------
+def zscore_by_asset_block(
+    X_tr: np.ndarray, X_te: np.ndarray, asset_feat_slices: List[Tuple[int, int]]
+) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Standardisation par actif (z-score) sur les fenêtres d'entraînement uniquement.
-    - X_train, X_test: np.ndarray (N, F_total, window)
-    - asset_feat_slices: liste de tranches [(f0,f1), ...] pour chaque actif dans F_total
+    X_* : (N, F_total, window)
+    asset_feat_slices : liste de tranches (f0, f1) pour chaque actif dans F_total
+    Standardise chaque bloc d'actif indépendamment avec stats de TRAIN.
     """
-    Xtr = X_train.copy()
-    Xte = X_test.copy()
+    Xtr = X_tr.copy()
+    Xte = X_te.copy()
+
     for (f0, f1) in asset_feat_slices:
-        # concatène toutes les valeurs de ce bloc sur N et T
-        block_train = Xtr[:, f0:f1, :].reshape(-1)
-        mu = np.nanmean(block_train)
-        sd = np.nanstd(block_train)
-        sd = sd if sd > eps else 1.0
+        # Moyenne/écart-type sur TRAIN, axes (batch, time) -> (N * window)
+        mu = Xtr[:, f0:f1, :].mean(axis=(0, 2), keepdims=True)      # (1, f1-f0, 1)
+        sd = Xtr[:, f0:f1, :].std(axis=(0, 2), keepdims=True) + 1e-8
+
         Xtr[:, f0:f1, :] = (Xtr[:, f0:f1, :] - mu) / sd
         Xte[:, f0:f1, :] = (Xte[:, f0:f1, :] - mu) / sd
+
     return Xtr, Xte
 
 
-# --------------------
-# Programme principal
-# --------------------
-
+# ---------------------------------------------------------------------
+# MAIN
+# ---------------------------------------------------------------------
 def main():
     parser = argparse.ArgumentParser(description="Génération features panel multi-actifs (Cross-Asset).")
     parser.add_argument("--dataset_dir", type=str, default=os.path.join(os.path.dirname(__file__), "dataset"))
@@ -156,22 +209,29 @@ def main():
 
     selector = [s.strip() for s in args.selector.split(",") if s.strip()]
 
-    # 1) Lister les fichiers
+    # 1) Lister les fichiers OHLCV et ignorer les fichiers méta
     all_files = []
     for fn in os.listdir(args.dataset_dir):
         if fn.lower().endswith((".csv", ".tsv")):
-            all_files.append(fn)
+            path = os.path.join(args.dataset_dir, fn)
+            if has_ohlcv_header(path, sep="\t"):
+                all_files.append(fn)
+            else:
+                print(f"skip: {fn} (non-OHLCV ou méta)")
     if not all_files:
-        raise FileNotFoundError(f"Aucun fichier .csv/.tsv dans {args.dataset_dir}")
+        raise FileNotFoundError(f"Aucun fichier OHLCV valide dans {args.dataset_dir}")
 
+    # Filtre par univers explicite (liste de tickers sans extension)
     universe = [u.strip() for u in args.universe.split(",") if u.strip()]
     if universe:
         keep = set(universe)
         all_files = [fn for fn in all_files if os.path.splitext(fn)[0] in keep]
+    if not all_files:
+        raise RuntimeError("Après filtrage univers, aucun fichier restant.")
 
-    # 2) Lire et construire un index global de dates
-    assets = []
-    per_asset_series = {}  # ticker -> dict(date -> (o,h,c,l,v))
+    # 2) Lire et construire l’index global de dates (union)
+    assets: List[str] = []
+    per_asset_series: Dict[str, Dict[str, Tuple[float, float, float, float, float]]] = {}
     all_dates_set = set()
 
     for fn in sorted(all_files):
@@ -179,9 +239,10 @@ def main():
         path = os.path.join(args.dataset_dir, fn)
         rows = read_sample_data(path)  # -> List[RawData], triée par .date (string 'YYYY-MM-DD')
         if not rows:
+            print(f"warn: {fn} vide, ignoré.")
             continue
         assets.append(ticker)
-        dd = {}
+        dd: Dict[str, Tuple[float, float, float, float, float]] = {}
         for r in rows:
             all_dates_set.add(r.date)
             dd[r.date] = (float(r.open), float(r.high), float(r.close), float(r.low), float(r.volume))
@@ -195,16 +256,25 @@ def main():
     print(f"[INFO] Actifs={len(assets)} | Dates uniques={T}")
 
     # 3) Pour chaque actif : aligner, extraire features via ChartFeature, empiler les blocs
-    features_blocks = []      # liste de (F_actif, T)
-    closes_by_asset = []      # liste de close(T,) pour labels
-    asset_feat_slices = []    # mémorise les tranches (f0,f1) de chaque actif dans la concat finale
+    features_blocks: List[np.ndarray] = []   # liste de (F_actif, T)
+    closes_by_asset: List[np.ndarray] = []   # liste de close(T,) pour labels
+    asset_feat_slices: List[Tuple[int, int]] = []  # tranches (f0,f1) de chaque actif dans la concat finale
     f_cursor = 0
 
     for ticker in assets:
         series = per_asset_series[ticker]
-        O, H, C, L, V = forward_fill_align(all_dates, series, start_zero=True)
+        O, H, C, L, V = forward_fill_align(all_dates, series, start_zero=False)
 
-        # Configurer l’extracteur unitaire
+        print(f"[DBG][{ticker}] any NaN/Inf in OHLCV:",
+              np.isnan(O).any() or np.isinf(O).any(),
+              np.isnan(H).any() or np.isinf(H).any(),
+              np.isnan(C).any() or np.isinf(C).any(),
+              np.isnan(L).any() or np.isinf(L).any(),
+              np.isnan(V).any() or np.isinf(V).any())
+        print(f"[DBG][{ticker}] zeros in close:", np.count_nonzero(C == 0.0))
+
+
+        # Extracteur unitaire (hérite de ChartFeature historique)
         cf = ChartFeature(selector)
         cf.recall_period = args.recall_period
         cf.prospective = args.prospective
@@ -213,9 +283,14 @@ def main():
         cf.extract(open_prices=O, close_prices=C, high_prices=H, low_prices=L, volumes=V)
         F_actif = len(cf.feature)
         feat_block = np.asarray(cf.feature, dtype=np.float64)  # (F_actif, T)
+
+        # === DBG (features bloc) ===
+        print(f"[DBG][{ticker}] any NaN/Inf in FEATURES:",
+              np.isnan(feat_block).any(), np.isinf(feat_block).any(),
+              "min/max:", np.nanmin(feat_block), np.nanmax(feat_block))
+
         features_blocks.append(feat_block)
         closes_by_asset.append(C.astype(np.float64))
-
         asset_feat_slices.append((f_cursor, f_cursor + F_actif))
         f_cursor += F_actif
 
@@ -227,19 +302,55 @@ def main():
     M = len(assets)
     print(f"[INFO] F_total={F_total} | M={M}")
 
+    # === DBG (concat) ===
+    print("[DBG] any NaN/Inf in features_concat:",
+          np.isnan(features_concat).any(), np.isinf(features_concat).any(),
+          "min/max:", np.nanmin(features_concat), np.nanmax(features_concat))
+
     # 4) Fenêtres + labels multi-cibles
     X_all, Y_all = build_windows_block(features_concat, closes_by_asset,
                                        window=args.window, prospective=args.prospective)
     N = X_all.shape[0]
     print(f"[INFO] N_windows={N} | X_all={X_all.shape} | Y_all={Y_all.shape}")
 
+
+    # === DBG (fenêtres brutes) ===
+    print("[DBG] any NaN/Inf in X_all:",
+          np.isnan(X_all).any(), np.isinf(X_all).any(),
+          "min/max:", np.nanmin(X_all), np.nanmax(X_all))
+    print("[DBG] any NaN/Inf in Y_all:",
+          np.isnan(Y_all).any(), np.isinf(Y_all).any(),
+          "min/max:", np.nanmin(Y_all), np.nanmax(Y_all))
+
+
     # 5) Split train/test en *fenêtres*
     cut = max(0, N - args.days_for_test)
     X_tr, X_te = X_all[:cut], X_all[cut:]
     Y_tr, Y_te = Y_all[:cut], Y_all[cut:]
+    print(f"[SPLIT] Train={X_tr.shape[0]} | Test={X_te.shape[0]} (cut={cut})")
+
+    # === DBG (avant standardisation) ===
+    if X_tr.size:
+        print("[DBG] any NaN/Inf in X_tr:",
+              np.isnan(X_tr).any(), np.isinf(X_tr).any(),
+              "min/max:", np.nanmin(X_tr), np.nanmax(X_tr))
+    if X_te.size:
+        print("[DBG] any NaN/Inf in X_te:",
+              np.isnan(X_te).any(), np.isinf(X_te).any(),
+              "min/max:", np.nanmin(X_te), np.nanmax(X_te))
 
     # 6) Standardisation par actif (z-score) calculée sur X_tr seulement
     X_tr_std, X_te_std = zscore_by_asset_block(X_tr, X_te, asset_feat_slices)
+
+    # === DBG (après standardisation) ===
+    if X_tr_std.size:
+        print("[DBG] any NaN/Inf in X_tr_std:",
+              np.isnan(X_tr_std).any(), np.isinf(X_tr_std).any(),
+              "min/max:", np.nanmin(X_tr_std), np.nanmax(X_tr_std))
+    if X_te_std.size:
+        print("[DBG] any NaN/Inf in X_te_std:",
+              np.isnan(X_te_std).any(), np.isinf(X_te_std).any(),
+              "min/max:", np.nanmin(X_te_std), np.nanmax(X_te_std))
 
     # 7) Dump pickle au format attendu par gossip.read_feature (features en [N,F,T])
     meta = {
@@ -251,7 +362,8 @@ def main():
         "F_total": F_total,
         "M": M,
         "N_total_windows": N,
-        "days_for_test": args.days_for_test
+        "days_for_test": args.days_for_test,
+        "dates_span": (all_dates[0] if all_dates else None, all_dates[-1] if all_dates else None),
     }
 
     with open(args.out, "wb") as fp:

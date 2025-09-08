@@ -1,4 +1,4 @@
-import numpy as np
+import numpy 
 import talib
 import pandas as pd
 import math
@@ -34,11 +34,11 @@ class ChartFeature:
     def shift(self, xs, n):
         """ Décalage temporel pour créer des features croisés. """
         if n > 0:
-            return np.r_[np.full(n, np.nan), xs[:-n]]
+            return numpy.r_[numpy.full(n, numpy.nan), xs[:-n]]
         elif n == 0:
             return xs
         else:
-            return np.r_[xs[-n:], np.full(-n, np.nan)]
+            return numpy.r_[xs[-n:], numpy.full(-n, numpy.nan)]
 
     def extract(self, open_prices, close_prices, high_prices, low_prices, volumes):
         """ Extraction brute des features d’un actif. """
@@ -60,19 +60,33 @@ class ChartFeature:
         (trop long à recopier ici).
         ↪ Tu gardes toutes les features ROCP, RSI, MACD, etc.
         """
+        # --- DEBUG préliminaire pour divisions par close ---
+        if close_prices is not None and numpy.any(close_prices == 0.0):
+            print("[DBG][chart] close_prices contient des zéros:",
+                int(numpy.count_nonzero(close_prices == 0.0)))
+        def _dbg_last(tag):
+            """Vérifie le dernier vecteur ajouté : NaN/Inf + min/max."""
+            arr = self.feature[-1]
+            if not numpy.all(numpy.isfinite(arr)):
+                print(f"[DBG][chart][{tag}] NaN/Inf après calcul. "
+                    f"min/max: {numpy.nanmin(arr)} / {numpy.nanmax(arr)}")
 
         if feature_type == 'ROCP':
             for i in range(1, self.recall_period):
                 self.feature.append(talib.ROCP(close_prices, timeperiod=i) / float(i))
+                _dbg_last(f"ROCP/{i}")
         if feature_type == 'OROCP':
             for i in range(1, self.recall_period):
                 self.feature.append(talib.ROCP(open_prices, timeperiod=i) / float(i))
+                _dbg_last(f"OROCP/{i}")
         if feature_type == 'HROCP':
             for i in range(1, self.recall_period):
                 self.feature.append(talib.ROCP(high_prices, timeperiod=i) / float(i))
+                _dbg_last(f"HROCP/{i}")
         if feature_type == 'LROCP':
             for i in range(1, self.recall_period):
                 self.feature.append(talib.ROCP(low_prices, timeperiod=i) / float(i))
+                _dbg_last(f"LROCP/{i}")
         if feature_type == 'MACD':
             macd, signal, hist = talib.MACD(close_prices, fastperiod=12, slowperiod=26, signalperiod=9)
             norm_signal = numpy.minimum(numpy.maximum(numpy.nan_to_num(signal), -1), 1)
@@ -80,20 +94,27 @@ class ChartFeature:
             norm_macd = numpy.minimum(numpy.maximum(numpy.nan_to_num(macd), -1), 1)
 
             zero = numpy.asarray([0])
-            macdrocp = numpy.minimum(numpy.maximum(numpy.concatenate((zero, numpy.diff(numpy.nan_to_num(macd)))), -1),
-                                     1)
-            signalrocp = numpy.minimum(
-                numpy.maximum(numpy.concatenate((zero, numpy.diff(numpy.nan_to_num(signal)))), -1), 1)
-            histrocp = numpy.minimum(numpy.maximum(numpy.concatenate((zero, numpy.diff(numpy.nan_to_num(hist)))), -1),
-                                     1)
+            macdrocp = numpy.minimum(numpy.maximum(numpy.concatenate((zero, numpy.diff(numpy.nan_to_num(macd)))), -1),1)
+            signalrocp = numpy.minimum(numpy.maximum(numpy.concatenate((zero, numpy.diff(numpy.nan_to_num(signal)))), -1), 1)
+            histrocp = numpy.minimum(numpy.maximum(numpy.concatenate((zero, numpy.diff(numpy.nan_to_num(hist)))), -1), 1)
 
             self.feature.append(norm_macd)
+            _dbg_last("MACD")
+
             self.feature.append(norm_signal)
+            _dbg_last("MACD_signal")
+
             self.feature.append(norm_hist)
+            _dbg_last("MACD_hist")
 
             self.feature.append(macdrocp)
+            _dbg_last("MACD_rocp")
+
             self.feature.append(signalrocp)
+            _dbg_last("MACD_signal_rocp")
+
             self.feature.append(histrocp)
+            _dbg_last("MACD_hist_rocp")
         if feature_type == 'RSI':
             rsi6 = talib.RSI(close_prices, timeperiod=6)
             rsi12 = talib.RSI(close_prices, timeperiod=12)
@@ -267,7 +288,7 @@ def align_and_merge(raw_data_dict, selector, window=30, with_label=True, flatten
             df["high"].values, df["low"].values,
             df["volume"].values
         )
-        feat = np.asarray(feat)  # shape (F, T)
+        feat = numpy.asarray(feat)  # shape (F, T)
         features_by_asset[code] = feat
 
         if with_label:
@@ -276,12 +297,12 @@ def align_and_merge(raw_data_dict, selector, window=30, with_label=True, flatten
             for t in range(window, len(closes) - cf.prospective):
                 future = closes[t: t + cf.prospective + 1]
                 labels.append(cf.make_label(future))
-            labels_by_asset[code] = np.asarray(labels)
+            labels_by_asset[code] = numpy.asarray(labels)
 
     # === 5. Standardiser par actif ===
     for code in features_by_asset:
         f = features_by_asset[code]
-        f = np.nan_to_num(f)
+        f = numpy.nan_to_num(f)
         f = (f - f.mean(axis=1, keepdims=True)) / (f.std(axis=1, keepdims=True) + 1e-8)
         features_by_asset[code] = f
 
@@ -301,10 +322,10 @@ def align_and_merge(raw_data_dict, selector, window=30, with_label=True, flatten
             block_t.append(f.T)  # transpose pour (window, F)
             if with_label:
                 y_t.append(labels_by_asset[code][t - window])
-        X.append(np.concatenate(block_t, axis=1))  # concat bloc par actif → (window, M×F)
+        X.append(numpy.concatenate(block_t, axis=1))  # concat bloc par actif → (window, M×F)
         if with_label:
             y.append(y_t)
-    X = np.asarray(X)  # (N, window, M×F)
-    y = np.asarray(y) if with_label else None  # (N, M)
+    X = numpy.asarray(X)  # (N, window, M×F)
+    y = numpy.asarray(y) if with_label else None  # (N, M)
 
     return X, y, asset_codes
