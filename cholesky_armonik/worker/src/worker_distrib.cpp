@@ -54,73 +54,20 @@ static std::string serialize_block(const std::vector<double>& v) {
 // ===========================================================================
 // Download/Upload blob via TaskHandler using data dependencies
 // ===========================================================================
-/*
-static std::string sanitize_ascii(std::string s){
-  std::string out; out.reserve(s.size());
-  for (unsigned char c: s) out.push_back((c=='\n'||c=='\r'||(c>=32&&c<127))?(char)c:'?');
-  return out;
-}
 
-static std::string preview_bytes(const std::string& s, size_t n = 96) {
-  std::string p = s.substr(0, n);
-  for (char& c : p) if ((unsigned char)c < 32 || (unsigned char)c > 126) c='.';
-  return p;
-}
-
-*/
 // 1. Download blob function
-static std::string download_blob(armonik::api::worker::TaskHandler& taskHandler,
-                                 const std::string& resultId){
-
-  std::cout << "[WK download_blob][INFO 1] SizePayload : " << taskHandler.getPayload().size()
-            << "\n [WK download_blob][INFO 2] Size DD : " << taskHandler.getDataDependencies().size()
-            << "\n [WK download_blob][INFO 3] Expected results : " << taskHandler.getExpectedResults().size() << std::endl;
-
+static std::string download_blob(armonik::api::worker::TaskHandler& taskHandler, const std::string& resultId){
   taskHandler.getPayload().data();
-
   const auto& deps = taskHandler.getDataDependencies();
-
-  std::cerr << "[WK download_blob][INFO 4] deps.size=" << deps.size() << "\n";
-  for (auto& kv : deps) {
-    bool looksPath = (!kv.second.empty() && kv.second.front()=='/');
-    bool existsFS  = looksPath && std::filesystem::exists(kv.second);
-    std::cerr << "  [WK download_blob][INFO 5] depId=" << kv.first
-             // << " [WK download_blob][INFO 6] valPreview=\"" << preview_bytes(kv.second) << "\""
-              << " [WK download_blob][INFO 7] len=" << kv.second.size()
-              << " [WK download_blob][INFO 8] looksPath=" << (looksPath?"true":"false")
-              << " [WK download_blob][INFO 9] exists=" << (existsFS?"true":"false") << "\n";
-  }
-
   auto it = deps.find(resultId);
   if (it == deps.end()){
-    std::cerr << "[WK download_blob][ERR 1] missing dep for id=" << resultId << "\n";
-    std::cerr << "[WK download_blob][ERR 2] available dep ids:";
-    for (auto& kv : deps) std::cerr << " " << kv.first;
-    std::cerr << "\n";
     throw std::runtime_error("Dependency not provided: " + resultId);
   }
   const std::string& path = it->second;
-/*
-  bool looksPath = (!path.empty() && path.front()=='/');
-  bool existsFS  = looksPath && std::filesystem::exists(path);
-  std::cerr << "[WK download_blob][INFO 10] about to fopen depId=" << resultId
-            << " [WK download_blob][INFO 11] as path=\"" << sanitize_ascii(path) << "\"\n";
-  std::cerr << "[WK download_blob][INFO 12] looksPath=" << (looksPath?"true":"false")
-            << " [WK download_blob][INFO 13] exists=" << (existsFS?"true":"false")
-            << " [WK download_blob][INFO 14] valuePreview=\"" << preview_bytes(path) << "\"\n";
-
-*/
   std::ifstream f(path, std::ios::binary);
   if (!f) {
     int e = errno;
-    std::cerr << "[WK download_blob][ERR 3] fopen fail errno=" << e << " (" << std::strerror(e) << ")\n";
-    std::error_code ec;
-    auto parent = std::filesystem::path(path).parent_path();
-    std::cerr << "[WK download_blob][INFO 15] parent dir=" << parent << "\n";
-    for (auto &ent : std::filesystem::directory_iterator(parent, ec)) {
-      std::cerr << "  - " << ent.path() << "\n";
-    }
-    throw std::runtime_error("Cannot open dependency file "+path+" (id="+resultId+") errno="+std::to_string(e)+" "+std::string(std::strerror(e)));
+    throw std::runtime_error("Cannot open dependency file " + path + " (id=" + resultId + ") errno=" + std::to_string(e) + " " + std::string(std::strerror(e)));
   }
   return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
 }
@@ -128,15 +75,12 @@ static std::string download_blob(armonik::api::worker::TaskHandler& taskHandler,
 // 2. Upload blob function
 static void upload_blob(armonik::api::worker::TaskHandler& taskHandler,
                         const std::string& resultId,
-                        const std::string& data){
-  try {
-    if (resultId.empty())
-      throw std::runtime_error("Empty resultId in upload_blob()");
-    taskHandler.send_result(resultId, data).get();
-  } catch (const std::exception& e) {
-    std::cout << "Error sending result " << e.what() << std::endl;
-    throw; 
-  }
+                        const std::string& data)
+{
+  if (resultId.empty())
+    throw std::runtime_error("Empty resultId in upload_blob()");
+
+  taskHandler.send_result(resultId, data).get();
 }
 
 // ==========================================================================
@@ -145,31 +89,30 @@ static void upload_blob(armonik::api::worker::TaskHandler& taskHandler,
 
 // 1. Parse Payload and check uuid format
 static std::map<std::string,std::string> parse_kv_to_map(const std::string& s) {
-    constexpr size_t MAX_TOKEN_LEN = 40;
-    std::map<std::string,std::string> kv;
+  constexpr size_t MAX_TOKEN_LEN = 40;
+  std::map<std::string,std::string> kv;
 
-    for (size_t i=0; i<s.size();) {
-        while (i<s.size() && std::isspace((unsigned char)s[i])) ++i;
-        if (i>=s.size()) break;
+  for (size_t i = 0; i < s.size();) {
+    while (i < s.size() && std::isspace((unsigned char)s[i])) ++i;
+    if (i >= s.size()) break;
 
-        size_t j=i; while (j<s.size() && !std::isspace((unsigned char)s[j])) ++j;
-        std::string tok = s.substr(i, j-i);
-        size_t eq = tok.find('=');
+    size_t j = i;
+    while (j < s.size() && !std::isspace((unsigned char)s[j])) ++j;
 
-        if (eq!=std::string::npos && eq>0 && eq+1<tok.size()) {
-        std::string k = tok.substr(0, eq), v = tok.substr(eq+1);
-        size_t maxv = (MAX_TOKEN_LEN > k.size()+1) ? MAX_TOKEN_LEN - (k.size()+1) : 0;
-        if (maxv && v.size()>maxv) v.resize(maxv);
-        if (!v.empty()) kv[std::move(k)] = std::move(v);
-        }
-        i=j;
+    std::string tok = s.substr(i, j - i);
+    size_t eq = tok.find('=');
+
+    if (eq != std::string::npos && eq > 0 && eq + 1 < tok.size()) {
+      std::string k = tok.substr(0, eq), v = tok.substr(eq + 1);
+      size_t maxv = (MAX_TOKEN_LEN > k.size() + 1) ? MAX_TOKEN_LEN - (k.size() + 1) : 0;
+      if (maxv && v.size() > maxv) v.resize(maxv);
+      if (!v.empty()) kv[std::move(k)] = std::move(v);
     }
-    std::cerr << "[WK3b] payload KVs:\n";
-    for (auto& kvp : kv) {
-      std::cerr << "  - " << kvp.first << " = " << kvp.second << "\n";
-    }
-    return kv;
+    i = j;
+  }
+  return kv;
 }
+
 
 
 // 2. Check if a string is a valid UUID format
@@ -251,25 +194,10 @@ public:
                 << "\n [DagCholeskyWorker_try][INFO 4] Expected results : " << taskHandler.getExpectedResults().size() << std::endl;
 
       const std::string payload = taskHandler.getPayload();
-      std::cout << "[DagCholeskyWorker_payload][INFO 5] Payload='" << payload << "'\n";
-
-      {
-        const auto& exp = taskHandler.getExpectedResults();
-        std::cerr << "[DagCholeskyWorker_expected result][INFO 6] expected_results.size=" << exp.size() << "\n";
-        for (auto &e : exp) std::cerr << "  [DagCholeskyWorker_expected result][INFO 6] expected=" << e << "\n";
-      }
-
       const auto kv = parse_kv_to_map(payload);
 
-      // OP
       std::string op = to_upper(need(kv, "op"));
-      if (op!="POTRF" && op!="TRSM" && op!="SYRK" && op!="GEMM")
-        return armonik::api::worker::ProcessStatus("Unsupported op='"+op+"'");
-
-      // B
       int B = need_int(kv, "B");
-      if (B <= 0) return armonik::api::worker::ProcessStatus("B must be > 0");
-
 
       double secs = 0.0, flops = 0.0, gflops = 0.0;
       struct timespec t0{}, t1{};
@@ -281,43 +209,25 @@ public:
 
         const std::string in_id  = need_uuid(kv, "in");
         const std::string out_id = need_uuid(kv, "out");
-        std::cout << "[POTRF_ID][INFO 1] in=" << in_id << "  out=" << out_id << "\n";
 
-        //==========================
         const auto& expected = taskHandler.getExpectedResults();
-        if (std::find(expected.begin(), expected.end(), out_id) == expected.end()){
-          std::cerr << "[POTRF_expected result][ERR 1] out_id not in expected results\n";
-          return armonik::api::worker::ProcessStatus("Output id not in expected results: " + out_id);
-        }
-        if (in_id == out_id) {
-          std::cerr << "[POTRF][ERR 2] out_id == in_id\n";
-          return armonik::api::worker::ProcessStatus("Input id equals output id (in=out) is forbidden");
-        }
-        //==========================
 
         const std::string Ablob = download_blob(taskHandler, in_id);
         std::vector<double> A   = deserialize_block(Ablob, B);
 
         CHAM_desc_t *dA = nullptr;
         create_desc_1block(&dA, A.data(), B);
-
         int info = 0;
         clock_gettime(CLOCK_MONOTONIC, &t0);
         info = CHAMELEON_dpotrf_Tile(ChamLower, dA);
         clock_gettime(CLOCK_MONOTONIC, &t1);
-        if (info != 0) {
-          CHAMELEON_Desc_Destroy(&dA);
-          throw std::runtime_error("dpotrf info=" + std::to_string(info));
-        }
-
+        if (info != 0) {CHAMELEON_Desc_Destroy(&dA);
+          throw std::runtime_error("dpotrf info=" + std::to_string(info));}
         secs  = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
         flops = (1.0/3.0) * (double)B * (double)B * (double)B;
         gflops = flops / (secs * 1e9);
-        std::cout << "[POTRF_IDout][INFO 1] upload out=" << out_id
-                  << " bytes=" << (A.size()*sizeof(double)) << "\n";
 
         upload_blob(taskHandler, out_id, serialize_block(A));
-
         CHAMELEON_Desc_Destroy(&dA);
       }
 
@@ -329,13 +239,6 @@ public:
         const std::string inA    = need_uuid(kv, "inA");
         const std::string out_id = need_uuid(kv, "out");
 
-        //==========================
-        if (out_id == inL || out_id == inA) {
-          std::cerr << "[WK6][ERR] out_id == inL || out_id == inA\n";
-          return armonik::api::worker::ProcessStatus("Output id equals an input id (inL/inA)");
-        }
-        //==========================
-
         const std::string Lblob = download_blob(taskHandler, inL);
         const std::string Ablob = download_blob(taskHandler, inA);
         std::vector<double> L = deserialize_block(Lblob, B);
@@ -344,11 +247,9 @@ public:
         CHAM_desc_t *dL = nullptr, *dA = nullptr;
         create_desc_1block(&dL, L.data(), B);
         create_desc_1block(&dA, A.data(), B);
-
         clock_gettime(CLOCK_MONOTONIC, &t0);
         CHAMELEON_dtrsm_Tile(ChamRight, ChamLower, ChamTrans, ChamNonUnit, 1.0, dL, dA);
         clock_gettime(CLOCK_MONOTONIC, &t1);
-
         secs   = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
         flops  = 0.5 * (double)B * (double)B * (double)B;
         gflops = flops / (secs * 1e9);
@@ -367,13 +268,6 @@ public:
         const std::string inA    = need_uuid(kv, "inA");
         const std::string out_id = need_uuid(kv, "out");
 
-        //==========================
-        if (out_id == inC || out_id == inA) {
-          std::cerr << "[WK6][ERR] out_id == inC || out_id == inA\n";
-          return armonik::api::worker::ProcessStatus("Output id equals an input id (inC/inA)");
-        }
-        //==========================
-
         const std::string Cblob = download_blob(taskHandler, inC);
         const std::string Ablob = download_blob(taskHandler, inA);
         std::vector<double> C = deserialize_block(Cblob, B);
@@ -382,11 +276,9 @@ public:
         CHAM_desc_t *dC = nullptr, *dA = nullptr;
         create_desc_1block(&dC, C.data(), B);
         create_desc_1block(&dA, A.data(), B);
-
         clock_gettime(CLOCK_MONOTONIC, &t0);
         CHAMELEON_dsyrk_Tile(ChamLower, ChamNoTrans, -1.0, dA, 1.0, dC);
         clock_gettime(CLOCK_MONOTONIC, &t1);
-
         secs   = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
         flops  = 1.0 * (double)B * (double)B * (double)B;
         gflops = flops / (secs * 1e9);
@@ -406,29 +298,20 @@ public:
         const std::string inAj   = need_uuid(kv, "inAj");
         const std::string out_id = need_uuid(kv, "out");
 
-        //==========================
-        if (out_id == inC || out_id == inAi || out_id == inAj) {
-          std::cerr << "[WK6][ERR] out_id == inC || out_id == inAi || out_id == inAj\n";
-          return armonik::api::worker::ProcessStatus("Output id equals an input id (inC/inAi/inAj)");
-        }
-        //==========================
-      
         const std::string Cblob  = download_blob(taskHandler, inC);
         const std::string Aiblob = download_blob(taskHandler, inAi);
         const std::string Ajblob = download_blob(taskHandler, inAj);
+
         std::vector<double> C  = deserialize_block(Cblob,  B);
         std::vector<double> Ai = deserialize_block(Aiblob, B);
         std::vector<double> Aj = deserialize_block(Ajblob, B);
-
         CHAM_desc_t *dC = nullptr, *dAi = nullptr, *dAj = nullptr;
         create_desc_1block(&dC,  C.data(),  B);
         create_desc_1block(&dAi, Ai.data(), B);
         create_desc_1block(&dAj, Aj.data(), B);
-
         clock_gettime(CLOCK_MONOTONIC, &t0);
         CHAMELEON_dgemm_Tile(ChamNoTrans, ChamTrans, -1.0, dAi, dAj, 1.0, dC);
         clock_gettime(CLOCK_MONOTONIC, &t1);
-
         secs   = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
         flops  = 2.0 * (double)B * (double)B * (double)B;
         gflops = flops / (secs * 1e9);
@@ -439,8 +322,6 @@ public:
         CHAMELEON_Desc_Destroy(&dAi);
         CHAMELEON_Desc_Destroy(&dAj);
       }
-
-
       else {
         return armonik::api::worker::ProcessStatus("Unknown op=" + op);
       }
@@ -454,39 +335,25 @@ public:
     } catch (const std::exception &e) {
       return armonik::api::worker::ProcessStatus(sanitize_ascii(e.what()));
     }
-  std::cout << "[WK14] ---- Execute OK ----\n";
-
   }
 };
 
+int main() {  
 
-
-int main() {
-  std::cout << "DagCholeskyWorker started. gRPC version = " << grpc::Version() << "\n";
-  
-  // Init CHAMELEON une seule fois pour tout le process
   int ncpu = env_int("CHM_NCPU", (int)std::max(1u, std::thread::hardware_concurrency()));
   int ngpu = env_int("CHM_NGPU", 0);
   CHAMELEON_Init(ncpu, ngpu);
   std::atexit([]{ CHAMELEON_Finalize(); });
-  
-  
+
   armonik::api::common::utils::Configuration config;
   config.add_json_configuration("/appsettings.json").add_env_configuration();
   config.set("ComputePlane__WorkerChannel__Address", "/cache/armonik_worker.sock");
   config.set("ComputePlane__AgentChannel__Address", "/cache/armonik_agent.sock");
-
-
+  
   try {
-    std::cerr << "[INFO] main: starting WorkerServer::run()\n";
     armonik::api::worker::WorkerServer::create<DagCholeskyWorker>(config)->run();
-    std::cerr << "[INFO] main: WorkerServer::run() returned\n";
   } catch (const std::exception &e) {
-    std::cerr << "Error in worker: " << e.what() << std::endl;
   }
-
-
-  std::cout << "Stopping Server..." << std::endl;
   return 0;
 }
 

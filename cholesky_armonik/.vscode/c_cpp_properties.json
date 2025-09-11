@@ -1,0 +1,19 @@
+{
+    "configurations": [
+        {
+            "name": "Linux",
+            "includePath": [
+                "${default}",
+                "/home/hvuacheux/armonik-cpp/include/armonik/common",
+                "/home/hvuacheux/armonik-cpp/include/armonik/client",
+                "/home/hvuacheux/armonik-cpp/include/armonik/worker"
+            ],
+            "defines": [],
+            "compilerPath": "/usr/bin/gcc",
+            "cStandard": "c17",
+            "cppStandard": "gnu++17",
+            "intelliSenseMode": "linux-gcc-x64"
+        }
+    ],
+    "version": 4
+}
