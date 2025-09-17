@@ -18,8 +18,9 @@ RUN apk update && apk add --no-cache \
     protobuf \
     grpc \
     grpc-dev \
-    protobuf-dev
-
+    protobuf-dev \
+    rapidjson-dev \
+    cereal 
 
 ENV protobuf_BUILD_TESTS=OFF
 RUN mkdir -p /client/install/

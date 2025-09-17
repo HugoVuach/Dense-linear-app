@@ -1,0 +1,15 @@
+# Réduire le contexte de build
+.git
+.gitignore
+**/build/
+**/.vscode/
+**/.idea/
+**/__pycache__/
+**/*.o
+**/*.obj
+**/*.a
+**/*.so
+**/*.dll
+**/*.dylib
+**/*.log
+armonik_api_temp/

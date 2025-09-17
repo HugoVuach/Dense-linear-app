@@ -16,6 +16,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ninja-build ocl-icd-opencl-dev \
     openmpi-bin libopenmpi-dev \
     libnvidia-ml-dev \
+    rapidjson-dev \
+    libcereal-dev \
  && rm -rf /var/lib/apt/lists/*
 
 RUN set -eux; cd /tmp; \
@@ -83,11 +85,11 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential cmake git pkg-config \
     libgrpc++-dev protobuf-compiler-grpc protobuf-compiler libprotobuf-dev \
-    ca-certificates && \
+    rapidjson-dev libcereal-dev ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
-RUN git clone https://github.com/aneoconsulting/ArmoniK.Api.git .  --depth 1
+RUN git clone --branch fix/stream-clear-bug https://github.com/HugoVuach/ArmoniK.Api.git .  --depth 1
 
 WORKDIR /src/packages/cpp
 RUN cmake -S . -B build \
@@ -113,6 +115,8 @@ FROM builder AS worker-build
 COPY --from=sdk /opt/armonik-cpp /opt/armonik-cpp
 COPY --from=sdk /usr/include /usr/include
 COPY --from=sdk /usr/lib /usr/lib
+
+RUN apt-get update && apt-get install -y --no-install-recommends rapidjson-dev libcereal-dev && rm -rf /var/lib/apt/lists/*
 
 ENV PKG_CONFIG_PATH="/opt/hwloc_cuda/lib/pkgconfig:/usr/local/lib/pkgconfig:/usr/local/share/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig" \
     LD_LIBRARY_PATH="/opt/armonik-cpp/lib:/opt/armonik-cpp/lib64:/opt/hwloc_cuda/lib:/usr/local/lib:/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu" \
