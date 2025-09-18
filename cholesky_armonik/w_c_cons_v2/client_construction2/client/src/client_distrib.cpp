@@ -25,10 +25,72 @@
 #include "cereal/archives/binary.hpp"
 #include "cereal/types/vector.hpp"
 #include <sstream>
+#include <optional>
+#include <stdexcept>
+#include <cassert>
+#include <cstdint>
+
 namespace ak_common = armonik::api::common;
 namespace ak_client = armonik::api::client;
 namespace ak_grpc   = armonik::api::grpc::v1;
 
+// =========================================================================================================================================================
+// Etape : Parameterize N and B to avoid client Docker rebuilds
+// =========================================================================================================================================================
+
+struct Params {
+  int N = 12; // default
+  int B = 4; //default
+};
+
+static int parse_int_str(const std::string& s, int fallback, const char* name){
+  try{
+    size_t pos =0;
+    long v = std::stol(s, &pos, 10);
+    if (pos !=s.size()) throw std::invalid_argument("trailing chars");
+    if (v <=0 || v > (1<<30)) throw std::out_of_range("range");
+    return static_cast<int>(v);
+  } catch(...){
+    std::cerr << "[CONFIG] Ignoring invalid value for " << name << "='" << s << "', using " << fallback << "\n";
+    return fallback;
+  }
+}
+static Params load_params(int argc, char** argv) {
+    Params p;
+  // 1) Env vars
+  if (const char* n = std::getenv("CHOLESKY_N")) p.N = parse_int_str(n, p.N, "CHOLESKY_N");
+  if (const char* b = std::getenv("CHOLESKY_B")) p.B = parse_int_str(b, p.B, "CHOLESKY_B");
+
+  // 2) CLI flags: --N=..., --B=..., et positionnels: N B
+  auto eat = [](const std::string& arg, const char* prefix) -> std::optional<std::string> {
+    const size_t len = std::strlen(prefix);
+    if (arg.rfind(prefix, 0) == 0) return arg.substr(len);
+    return std::nullopt;
+  };
+
+  int positional_seen = 0;
+  for (int i = 1; i < argc; ++i) {
+    std::string arg = argv[i];
+    if (arg == "-h" || arg == "--help") {
+      std::cout <<
+        "Usage: app [--N=INT] [--B=INT]\n"
+        "   or: app N B\n"
+        "Also supported via env: CHOLESKY_N / CHOLESKY_B\n";
+      std::exit(0);
+    }
+    if (auto v = eat(arg, "--N=")) { p.N = parse_int_str(*v, p.N, "--N"); continue; }
+    if (auto v = eat(arg, "--B=")) { p.B = parse_int_str(*v, p.B, "--B"); continue; }
+    if (!arg.empty() && arg[0] != '-') {
+      if (positional_seen == 0) { p.N = parse_int_str(arg, p.N, "N"); ++positional_seen; }
+      else if (positional_seen == 1) { p.B = parse_int_str(arg, p.B, "B"); ++positional_seen; }
+    }
+  }
+
+  if (p.N <= 0 || p.B <= 0) {
+    throw std::invalid_argument("N and B must be positive");
+  }
+  return p;
+}
 
 /*
 Entrées :
@@ -41,6 +103,7 @@ Sortie (JSON) :
 "inAj":"9a7c1e2d-3c4b-5a6f-7f3a-2c1d8b9e4a0b"}
 */
 
+/*
 static std::string make_payload_potrf(const std::string& id_in, int B) {
   rapidjson::StringBuffer sb;
   rapidjson::Writer<rapidjson::StringBuffer> w(sb);
@@ -95,17 +158,159 @@ static std::string make_payload_gemm(const std::string& id_Cij,
   w.EndObject();
   return sb.GetString();
 }
+*/
 
 
 
+static std::string make_payload(const std::vector<std::string>& ids, int B) {
+    rapidjson::StringBuffer sb;
+    rapidjson::Writer<rapidjson::StringBuffer> w(sb);
+    w.StartObject();
+    w.Key("B"); w.Int(B);
 
-static std::vector<double> generate_random_B_block(int B, double scale=1.0) {
-  static std::mt19937_64 rng(42);            
-  std::normal_distribution<double> dist(0.0, 1.0);
-  std::vector<double> X(B*B);
-  for (int t=0;t<B*B;++t) X[t] = dist(rng) * scale;
-  return X;
+    if (ids.size() == 1) {
+        w.Key("op"); w.String("POTRF");
+        w.Key("in"); w.String(ids[0].c_str(), (rapidjson::SizeType)ids[0].size());
+    } else if (ids.size() == 2) {
+        if (!ids[0].empty() && ids[0][0] == 'L') {
+            w.Key("op"); w.String("TRSM");
+            w.Key("inL"); w.String(ids[0].c_str(), (rapidjson::SizeType)ids[0].size());
+            w.Key("inA"); w.String(ids[1].c_str(), (rapidjson::SizeType)ids[1].size());
+        } else {
+            w.Key("op"); w.String("SYRK");
+            w.Key("inC"); w.String(ids[0].c_str(), (rapidjson::SizeType)ids[0].size());
+            w.Key("inA"); w.String(ids[1].c_str(), (rapidjson::SizeType)ids[1].size());
+        }
+    } else if (ids.size() == 3) {
+        w.Key("op"); w.String("GEMM");
+        w.Key("inC");  w.String(ids[0].c_str(), (rapidjson::SizeType)ids[0].size());
+        w.Key("inAi"); w.String(ids[1].c_str(), (rapidjson::SizeType)ids[1].size());
+        w.Key("inAj"); w.String(ids[2].c_str(), (rapidjson::SizeType)ids[2].size());
+    } else {
+        throw std::runtime_error("Nombre d'arguments non supporté");
+    }
+    w.EndObject();
+    return sb.GetString();
 }
+
+
+
+
+
+
+/*
+static std::vector<double> generate_random_B_block(int B, double scale=1.0) 
+{ 
+static std::mt19937_64 rng(42); 
+std::normal_distribution<double> dist(0.0, 1.0); 
+std::vector<double> X(B*B); 
+for (int t=0;t<B*B;++t) X[t] = dist(rng) * scale; return X; 
+}
+*/
+
+
+
+
+
+// ------------------------------------------------------------------
+// Etape : géneration de la matric SPD
+// ------------------------------------------------------------------
+/*
+idx(i,j) = i + j*LDA → génères et symétrises en colonne-major : c’est exactement ce que CHAMELEON/LAPACK attend.
+Tu imposes la symétrie en remplissant un triangle puis en recopiant l’autre : nickel.
+Le bump diagonal + la fonction enforce_strict_diag_dominance garantissent une matrice SPD (via Gershgorin),
+tant que tu les appliques après la symétrisation.
+*/
+static void make_spd_like_chameleon(double* A, int N, int LDA,
+                                    double bump, char uplo, std::uint64_t seed)
+{
+    assert(A != nullptr);
+    assert(N >= 0);
+    assert(LDA >= std::max(1, N));
+
+    std::mt19937_64 gen(seed);
+    std::uniform_real_distribution<double> dist(-0.5, 0.5);
+
+    auto idx = [LDA](int i, int j) { return i + j * LDA; }; 
+
+    if (uplo == 'L' || uplo == 'l') {
+        for (int j = 0; j < N; ++j)
+            for (int i = j; i < N; ++i)
+                A[idx(i,j)] = dist(gen);
+        for (int j = 0; j < N; ++j)
+            for (int i = 0; i < j; ++i)
+                A[idx(i,j)] = A[idx(j,i)];
+    } else { 
+        for (int j = 0; j < N; ++j)
+            for (int i = 0; i <= j; ++i)
+                A[idx(i,j)] = dist(gen);
+        for (int j = 0; j < N; ++j)
+            for (int i = j+1; i < N; ++i)
+                A[idx(i,j)] = A[idx(j,i)];
+    }
+    for (int i = 0; i < N; ++i) A[idx(i,i)] += bump;
+}
+
+// Option : forcer la SPD par stricte dominance diagonale
+static void enforce_strict_diag_dominance(double* A, int N, int LDA, double eps = 1e-8)
+{
+    auto idx = [LDA](int i, int j) { return i + j * LDA; };
+    for (int i = 0; i < N; ++i) {
+        double s = 0.0;
+        for (int j = 0; j < N; ++j) if (j != i) s += std::abs(A[idx(i,j)]);
+        double need = s + eps - A[idx(i,i)];
+        if (need > 0.0) A[idx(i,i)] += need;
+    }
+}
+// A en colonne-major, LDA >= N
+// make_spd_like_chameleon(A, N, LDA, /*bump=*/100.0, 'L', /*seed=*/12345ULL);
+// enforce_strict_diag_dominance(A, N, LDA);
+
+// ------------------------------------------------------------------
+// Etape : extraction des bloc en col-major
+// ------------------------------------------------------------------
+/*
+extract_block_from_spd_matrix_colmajor(...) copie A[r0+ii, c0+jj] dans block[ii + jj*B] → col-major des deux côtés, parfait.
+Zero-padding en bordure : OK.
+Appel côté client avec A.data(), N, LDA (=N), B, bi, bj → c’est bon
+*/
+// Copie le bloc (bi,bj) de A (N×N, col-major, LDA) vers `block` (B×B, col-major).
+// Zero-padding si le bloc dépasse les bords.
+// A : pointeur sur la matrice globale en col-major (LDA >= N conseillé)
+static void extract_block_from_spd_matrix_colmajor(const double* A,
+                                                   int N, int LDA,
+                                                   int B, int bi, int bj,
+                                                   std::vector<double>& block)
+{
+  block.assign(static_cast<size_t>(B) * B, 0.0);
+
+  // origine du bloc dans la matrice globale
+  const int r0 = bi * B;  // row start
+  const int c0 = bj * B;  // col start
+
+  // indexeur col-major : a(i,j) = A[i + j*LDA]
+  auto Aat = [A, LDA](int i, int j) -> double {
+    return A[i + j * LDA];
+  };
+
+  // Remplir le buffer bloc (col-major aussi) : block[ii,jj] = A[r0+ii, c0+jj]
+  for (int jj = 0; jj < B; ++jj) {
+    int cj = c0 + jj;
+    if (cj >= N) continue;                 // hors matrice → reste 0
+
+    for (int ii = 0; ii < B; ++ii) {
+      int ri = r0 + ii;
+      if (ri >= N) break;                  // hors matrice → reste 0
+
+      // block est col-major : index = ii + jj*B
+      block[static_cast<size_t>(ii) + static_cast<size_t>(jj) * B] = Aat(ri, cj);
+    }
+  }
+}
+
+
+
+
 
 
 //  Prend en entrée deux entiers i et j et retourne une chaîne de caractères
@@ -116,7 +321,8 @@ static std::string block_id_from_ij(int i, int j) {
 }
 
 
-int main() {
+//int main() {
+int main(int argc, char** argv) {
 
   ak_common::logger::Logger logger{ak_common::logger::writer_console(),ak_common::logger::formatter_plain(true)};
   ak_common::utils::Configuration config;
@@ -136,9 +342,14 @@ int main() {
   ak_client::ResultsClient  resultsClient( ak_grpc::results::Results::NewStub(channel));
   ak_client::SessionsClient sessionsClient(ak_grpc::sessions::Sessions::NewStub(channel));
   ak_client::EventsClient   eventsClient(  ak_grpc::events::Events::NewStub(channel));
-  const int N  = 12;                   
-  const int B  = 4;                   
+
+  // const int N  = 12;                   
+  // const int B  = 4;
+  const Params P = load_params(argc, argv);
+  const int N = P.N;
+  const int B = P.B;    
   const int Nb = (N + B - 1) / B;
+
   std::string session_id = sessionsClient.create_session(taskOptions, {part_cpu_vm});
 
 
@@ -184,12 +395,29 @@ int main() {
   //             blockView(reinterpret_cast<const char*>(block.data()),128)
   //           - blockView.size() = 128 = block.size() * sizeof(double)
 
+
+  //double ridge = 1e-6 * N;   
+  //auto A = make_spd_from_gram(N, N, 1.0, ridge);
+  // A allouée en col-major : std::vector<double> A(LDA * N);
+  int LDA = N;
+  std::vector<double> A((size_t)LDA * N);
+  make_spd_like_chameleon(A.data(), N, LDA, /*bump=*/100.0, 'L', /*seed=*/12345ull);
+  enforce_strict_diag_dominance(A.data(), N, LDA);
+
   for (int i=0;i<Nb;++i) {
     for (int j=0;j<=i;++j) {
-      std::vector<double> block = generate_random_B_block(B, 0.1);
-      if (i==j) {
-        for (int d=0; d<B; ++d) block[d*B + d] += (double)B;
-      }                                                                                                                
+      std::vector<double> block;
+      extract_block_from_spd_matrix_colmajor(A.data(), N, LDA, B, i, j, block);
+      absl::string_view blockView(reinterpret_cast<const char*>(block.data()),block.size() * sizeof(double));
+      const std::string& result_id = id_map.at(block_id_from_ij(i,j));
+      resultsClient.upload_result_data(session_id, result_id, blockView);
+
+
+      /*
+      // std::vector<double> block = generate_random_B_block(B, 0.1);
+      // if (i==j) {
+      //  for (int d=0; d<B; ++d) block[d*B + d] += (double)B;
+      //}                                                                                                                
       auto bytes = block.size() * sizeof(double);                                                                      // Pour chaque block 
       std::cout << "[CLIENT][block = generate_random_B_block()] key=" << block_id_from_ij(i,j) << std::endl;           //            key = blk/i/j
       std::cout << "[CLIENT][block = generate_random_B_block()] block size =" << block.size() << std::endl;            //     block size = 16
@@ -199,7 +427,7 @@ int main() {
       const std::string& result_id = id_map.at(block_id_from_ij(i,j));
       std::cout << "[CLIENT][result_id id_map] result_id =" << result_id << std::endl;                                 // c'est le bon result ID qui est associé à la clé blk/i/j
       resultsClient.upload_result_data(session_id, result_id, blockView);                                              // upload initial de chaque block
-
+      */
     }
   }
 
@@ -281,7 +509,8 @@ auto submit_one = [&](const std::string& payload_json,
     // 1) POTRF(k,k)
     {
       const std::string Lkk_in = latest.at(block_id_from_ij(k, k));                                                  // Lkk_in =15a98827-0053-47d8-86b8-9e0ef7250685 
-      const std::string payload = make_payload_potrf(Lkk_in, B); 
+      // const std::string payload = make_payload_potrf(Lkk_in, B); 
+      const std::string payload = make_payload({Lkk_in}, B);
         std::cout << " [CLIENT][POTRF(k,k)] : blk" << block_id_from_ij(k, k) << std::endl;
         std::cout << " [CLIENT][POTRF(k,k)] :  Lkk_in =" << Lkk_in << std::endl;
         std::cout << " [CLIENT][POTRF(k,k)] : payload_len=" << payload.size() << std::endl;
@@ -298,7 +527,8 @@ auto submit_one = [&](const std::string& payload_json,
       const std::string Lkk_in = latest.at(block_id_from_ij(k, k));
       for (int i = k + 1; i < Nb; ++i) {
         const std::string Aik_in  = latest.at(block_id_from_ij(i, k));
-        const std::string payload = make_payload_trsm(Lkk_in, Aik_in, B);
+        // const std::string payload = make_payload_trsm(Lkk_in, Aik_in, B);
+        const std::string payload = make_payload({Lkk_in, Aik_in}, B);
         const std::string Aik_out = submit_one(payload, {Lkk_in, Aik_in}, part_cpu_vm);
         latest[block_id_from_ij(i, k)] = Aik_out;
       }
@@ -314,14 +544,16 @@ auto submit_one = [&](const std::string& payload_json,
         for (int j = k + 1; j <= i; ++j) {
           if (i == j) {
             const std::string Cii_in  = latest.at(block_id_from_ij(i, i));
-            const std::string payload = make_payload_syrk(Cii_in, Aik_in, B);
+            //const std::string payload = make_payload_syrk(Cii_in, Aik_in, B);
+            const std::string payload = make_payload({Cii_in, Aik_in}, B);
             const std::string Cii_out = submit_one(payload, {Cii_in, Aik_in}, part_for_update);
             latest[block_id_from_ij(i, i)] = Cii_out;
 
           } else {
             const std::string Cij_in = latest.at(block_id_from_ij(i, j));
             const std::string Ajk_in = latest.at(block_id_from_ij(j, k));
-            const std::string payload = make_payload_gemm(Cij_in, Aik_in, Ajk_in, B);
+            // const std::string payload = make_payload_gemm(Cij_in, Aik_in, Ajk_in, B);
+            const std::string payload = make_payload({Cij_in, Aik_in, Ajk_in}, B); 
             const std::string Cij_out = submit_one(payload, {Cij_in, Aik_in, Ajk_in}, part_for_update);
             latest[block_id_from_ij(i, j)] = Cij_out;
           }
